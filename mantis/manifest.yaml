@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.10.0"
+version: "0.10.1"
 author: forge
 category: connector
 mode: browser-side
@@ -526,18 +526,19 @@ tools:
       let resolvedProjectId = args.project_id ? String(args.project_id) : '';
       let resolvedProjectName = '';
       if (!resolvedProjectId && args.project_name) {
-        const wantedRaw = String(args.project_name).trim().toLowerCase();
-        // Find the switcher's select. It's the one inside a form that
-        // posts to set_project.php (different from the filter form).
+        // Strip the "#N " prefix from BOTH input and option text so the
+        // resolver works whether the user passes "FortiNAC" or copies
+        // the full display label "#17 FortiNAC".
+        const norm = (s) => String(s).replace(/^\s*#\d+\s+/, '').trim().toLowerCase();
+        const wanted = norm(args.project_name);
         const switchForm = Array.from(document.querySelectorAll('form'))
           .find(f => /set_project\.php/.test(f.action || ''));
         const sel = switchForm?.querySelector('select[name="project_id"]');
         const opts = sel ? Array.from(sel.options) : [];
-        const norm = (s) => s.replace(/^#\d+\s+/, '').trim().toLowerCase();
         // Exact match first (preferred over substring)
-        let hit = opts.find((o) => norm(o.text) === wantedRaw);
+        let hit = opts.find((o) => norm(o.text) === wanted);
         // Substring fallback
-        if (!hit) hit = opts.find((o) => norm(o.text).includes(wantedRaw));
+        if (!hit) hit = opts.find((o) => norm(o.text).includes(wanted));
         if (hit) {
           resolvedProjectId = String(hit.value);
           resolvedProjectName = hit.text.trim();
