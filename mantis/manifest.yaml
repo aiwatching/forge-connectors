@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.7.0"
+version: "0.8.0"
 author: forge
 category: connector
 mode: browser-side
@@ -338,10 +338,13 @@ tools:
         type: number
         label: |
           Mantis project id (numeric — get from list_projects). This is
-          the same field as the top-right "current project" switcher in
-          the Mantis page header. STRONGLY RECOMMENDED to set explicitly
-          on every job: without it the search runs against "All Projects"
-          which usually returns way more / unrelated bugs.
+          the SAME field as the top-right "current project" switcher in
+          the Mantis page header. The connector POSTs it to
+          set_project.php BEFORE running the filter (the filter form
+          itself has no project_id field — confirmed live; the project
+          is purely PHP-session state). STRONGLY RECOMMENDED to set on
+          every job: without it the search runs against "All Projects"
+          and you'll see way more / unrelated bugs.
         required: false
       fix_schedule:
         type: string
@@ -493,6 +496,54 @@ tools:
       // Strategy: take the form currently rendered on the page,
       // FormData-ify it, then override only the fields we care about.
       const baseDir = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}`;
+
+      // ── STEP 0: switch the PHP-session "current project" (the
+      // top-right project switcher in the page header) BEFORE any
+      // filter work. Probed live with chrome MCP: the filter form on
+      // view_all_bug_page.php has 55 fields and NONE of them is
+      // `project_id` — the filter operates against whatever project
+      // is set in the session by set_project.php. So we POST that
+      // first.
+      //
+      // If args.project_id is unset, we still POST `0` (= All Projects)
+      // to clear any stale project picked by a previous job — the
+      // same session-leak class as handler_id / reporter_id.
+      //
+      // Single POST, ~50 ms. No-op if the session already matches.
+      const projectIdForSession = String(args.project_id || '0');
+      try {
+        const fdProj = new FormData();
+        fdProj.set('project_id', projectIdForSession);
+        await fetch(baseDir + 'set_project.php', {
+          method: 'POST',
+          body: fdProj,
+          credentials: 'include',
+        });
+      } catch (e) {
+        // Non-fatal: if this fails the search will still run, just
+        // against whatever project the session had.
+        console.warn('[mantis] set_project.php failed:', (e && e.message) || e);
+      }
+
+      // After switching the project, re-fetch the bug page so the
+      // filter form below is rendered with the new project's options
+      // (users, fix_schedule values, etc.). Reload in-place rather
+      // than navigating away.
+      if (args.project_id) {
+        try {
+          const html = await fetch(baseDir + 'view_all_bug_page.php', { credentials: 'include' }).then(r => r.text());
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const freshForm = doc.querySelector('#filters');
+          if (freshForm) {
+            // Swap the in-DOM filter form for the freshly-rendered
+            // one. Preserves the rest of the page (header, sidebar)
+            // and is invisible to the user.
+            const oldForm = document.getElementById('filters');
+            if (oldForm) oldForm.replaceWith(freshForm.cloneNode(true));
+          }
+        } catch {}
+      }
+
       const filterForm = Array.from(document.querySelectorAll('form'))
         .find(f => /view_all_set\.php/i.test(f.action || ''));
       let filterUrl = baseDir + 'view_all_set.php';
@@ -566,15 +617,11 @@ tools:
         setInput('show_resolution', '');
         setInput('search',          '');
         setInput('search_fixforecast', '');
-        // Reset project_id too. Mantis's filter form keeps the previous
-        // value AND the top-right "current project" switcher in the
-        // page header is itself backed by this same field on submit.
-        // Without this reset, a job that doesn't pass project_id
-        // inherits whatever the user (or a prior job) last picked —
-        // which is the same session-leak class of bug as handler_id.
-        // 0 means "All Projects"; per-job source_input should set the
-        // concrete project_id (the top-right project switch matters).
-        setInput('project_id',      '0');
+        // NOTE: there is NO `project_id` input in this filter form.
+        // The project is controlled by the PHP session, which we
+        // already updated via set_project.php in STEP 0 above.
+        // Setting it here would be a no-op (confirmed live with
+        // chrome MCP).
         // Clear every visible multi_* select too, for cosmetics + safety in
         // case some Mantis version DOES read multicheckbox[].
         for (const id of ['multi_status', 'multi_severity', 'multi_priority', 'multi_resolution']) {
@@ -597,10 +644,9 @@ tools:
           // user has the page open (cosmetic; not what drives the filter).
           setSelect('multi_status', statusIds.map(String));
         }
-        // 2. Free-text + per_page + project
+        // 2. Free-text + per_page (project is session-scoped — see STEP 0)
         setInput('search', String(args.query || ''));
         setInput('per_page', String(PAGE_SIZE));
-        if (args.project_id) setInput('project_id', String(args.project_id));
         // 3. Users
         if (handlerId)     setInput('handler_id', handlerId);
         if (reporterId)    setInput('reporter_id', reporterId);
