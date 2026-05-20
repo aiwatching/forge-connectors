@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.10.1"
+version: "0.10.2"
 author: forge
 category: connector
 mode: browser-side
