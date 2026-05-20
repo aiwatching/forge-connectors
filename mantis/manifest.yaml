@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.8.0"
+version: "0.9.0"
 author: forge
 category: connector
 mode: browser-side
@@ -337,14 +337,18 @@ tools:
       project_id:
         type: number
         label: |
-          Mantis project id (numeric — get from list_projects). This is
-          the SAME field as the top-right "current project" switcher in
-          the Mantis page header. The connector POSTs it to
-          set_project.php BEFORE running the filter (the filter form
-          itself has no project_id field — confirmed live; the project
-          is purely PHP-session state). STRONGLY RECOMMENDED to set on
-          every job: without it the search runs against "All Projects"
-          and you'll see way more / unrelated bugs.
+          Mantis INTERNAL numeric project id (NOT the "#N" prefix shown
+          in the picker — those are display labels). Call `list_projects`
+          first; use the `id` field from the result. For example, on
+          this install the FortiNAC project displays as "#17 FortiNAC"
+          but its internal id is 123 — pass 123 here.
+
+          This is the SAME field as the top-right "current project"
+          switcher. The connector POSTs it to set_project.php before
+          running the filter (the filter form has no project_id field —
+          the project is purely PHP-session state). STRONGLY RECOMMENDED
+          to set on every job; without it the search runs against
+          "All Projects".
         required: false
       fix_schedule:
         type: string
@@ -525,166 +529,50 @@ tools:
         console.warn('[mantis] set_project.php failed:', (e && e.message) || e);
       }
 
-      // After switching the project, re-fetch the bug page so the
-      // filter form below is rendered with the new project's options
-      // (users, fix_schedule values, etc.). Reload in-place rather
-      // than navigating away.
-      if (args.project_id) {
-        try {
-          const html = await fetch(baseDir + 'view_all_bug_page.php', { credentials: 'include' }).then(r => r.text());
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          const freshForm = doc.querySelector('#filters');
-          if (freshForm) {
-            // Swap the in-DOM filter form for the freshly-rendered
-            // one. Preserves the rest of the page (header, sidebar)
-            // and is invisible to the user.
-            const oldForm = document.getElementById('filters');
-            if (oldForm) oldForm.replaceWith(freshForm.cloneNode(true));
-          }
-        } catch {}
+      // ── Filter application via URL query with temporary=y ─────────
+      //
+      // Earlier versions tried to mutate + POST the in-DOM filter form.
+      // That worked on stock MantisBT but FAILED on customized installs
+      // (Fortinet's variant, e.g.): the multicheckbox[] / show_status
+      // serialization ends up disagreeing and Mantis returns 0 rows.
+      //
+      // The URL-query path is documented Mantis behaviour and avoids
+      // the whole DOM serialization minefield:
+      //
+      //   GET /view_all_set.php?type=1&temporary=y&status_id[]=10&...
+      //
+      // `temporary=y` tells Mantis NOT to save this filter to the user's
+      // session, so we sidestep the cross-job session-leak class entirely.
+      // The `set_project.php` POST in STEP 0 above stays — it sets the
+      // session's CURRENT PROJECT (not the filter), and view_all_set.php
+      // operates within that project.
+      //
+      // User filters (handler_id/reporter_id/qa_assignee_id) are resolved
+      // from the in-DOM filter form's <select> options BEFORE this point;
+      // we use the numeric IDs in the URL query.
+      const params = new URLSearchParams();
+      params.set('type', '1');
+      params.set('temporary', 'y');
+      params.set('print', '0');
+      params.set('search', String(args.query || ''));
+      params.set('per_page', String(PAGE_SIZE));
+      if (handlerId)        params.set('handler_id', handlerId);
+      if (reporterId)       params.set('reporter_id', reporterId);
+      if (qaAssigneeId)     params.set('qa_assignee_id', qaAssigneeId);
+      if (fixForecast)      params.set('search_fixforecast', fixForecast);
+      for (const id of statusIds) params.append('status_id[]', String(id));
+      // extra_params override — set last so callers can patch anything
+      // the above didn't cover (custom_field_X, sort=, dir=, etc.).
+      const extra = args.extra_params || {};
+      for (const [k, v] of Object.entries(extra)) {
+        if (v == null || v === '') continue;
+        if (Array.isArray(v)) { params.delete(k); v.forEach((x) => params.append(k, String(x))); }
+        else params.set(k, String(v));
       }
-
-      const filterForm = Array.from(document.querySelectorAll('form'))
-        .find(f => /view_all_set\.php/i.test(f.action || ''));
-      let filterUrl = baseDir + 'view_all_set.php';
-      let appliedVia = 'form';
-
-      if (!filterForm) {
-        appliedVia = 'fallback-url';
-        // Fallback only — Mantis without the form on the page won't honor
-        // our filters fully, but we at least try the documented params.
-        const params = new URLSearchParams();
-        params.set('type', '1');
-        params.set('temporary', 'y');
-        params.set('print', '0');
-        params.set('search', String(args.query || ''));
-        params.set('per_page', String(PAGE_SIZE));
-        if (args.project_id)  params.set('project_id', String(args.project_id));
-        if (handlerId)        params.set('handler_id', handlerId);
-        if (reporterId)       params.set('reporter_id', reporterId);
-        if (qaAssigneeId)     params.set('qa_assignee_id', qaAssigneeId);
-        if (fixForecast)      params.set('search_fixforecast', fixForecast);
-        for (const id of statusIds) params.append('status_id[]', String(id));
-        filterUrl = baseDir + 'view_all_set.php?' + params.toString();
-        const r = await fetch(filterUrl, { credentials: 'include' }).catch(e => ({_err: e.message}));
-        if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
-      } else {
-        // Mantis renders multiple <select name="multicheckbox[]"> elements
-        // — one per group (severity / status / priority / resolution / …).
-        // Each is given a distinguishing \`id\` like multi_status. Earlier
-        // attempts to align them by DOM-order positional matching with
-        // show_X hidden fields were brittle. Set selections DIRECTLY on
-        // each select by id, then let the browser's native FormData
-        // serialize the form — Mantis sees exactly what it would if a
-        // human had clicked the options.
-        function setSelect(id, values) {
-          const sel = filterForm.querySelector('#' + id);
-          if (!sel) return false;
-          for (const opt of sel.options) {
-            opt.selected = values.includes(String(opt.value));
-          }
-          return true;
-        }
-        function setInput(name, value) {
-          const el = filterForm.querySelector('[name="' + name + '"]');
-          if (!el) return false;
-          if (el.tagName === 'SELECT') {
-            for (const opt of el.options) opt.selected = (String(opt.value) === String(value));
-          } else {
-            el.value = String(value);
-          }
-          return true;
-        }
-
-        // ── CRITICAL: reset every filter we manage to its default first.
-        //
-        // Mantis stores the filter in the user's PHP session. If a previous
-        // Job set handler_id=8806 ("zliu") and this Job's search doesn't
-        // mention assignee, Mantis will STILL filter by handler_id=8806 —
-        // leaking state across jobs that share a browser session. This
-        // produced the exact "I configured fix_schedule=7.6.7 and got
-        // results pre-filtered to my user" symptom.
-        //
-        // Resetting before applying means each Job's source_input is the
-        // ENTIRE filter spec: anything you don't list is "any". Same
-        // contract the user expects from a stateless tool.
-        setInput('handler_id',      'any');
-        setInput('reporter_id',     'any');
-        setInput('qa_assignee_id',  'any');
-        setInput('show_status',     '');
-        setInput('show_severity',   '');
-        setInput('show_priority',   '');
-        setInput('show_resolution', '');
-        setInput('search',          '');
-        setInput('search_fixforecast', '');
-        // NOTE: there is NO `project_id` input in this filter form.
-        // The project is controlled by the PHP session, which we
-        // already updated via set_project.php in STEP 0 above.
-        // Setting it here would be a no-op (confirmed live with
-        // chrome MCP).
-        // Clear every visible multi_* select too, for cosmetics + safety in
-        // case some Mantis version DOES read multicheckbox[].
-        for (const id of ['multi_status', 'multi_severity', 'multi_priority', 'multi_resolution']) {
-          const sel = filterForm.querySelector('#' + id);
-          if (sel) for (const o of sel.options) o.selected = false;
-        }
-
-        // 1. Status — some customized Mantis installs store the active
-        //    filter in the \`show_status\` HIDDEN field (comma-separated
-        //    ids), NOT in the multi_status <select>. Probed empirically:
-        //    clicking "Apply Filter" in the UI sends e.g. show_status=10,20,50.
-        //    The visible multi_status select is just UI state that Mantis
-        //    ignores on submit. Setting show_status directly is the only
-        //    thing that actually filters.
-        //
-        //    Pass empty string (or unset) to mean "no status filter (any)".
-        if (statusIds.length > 0) {
-          setInput('show_status', statusIds.join(','));
-          // Also sync the visible select so the UI is consistent if the
-          // user has the page open (cosmetic; not what drives the filter).
-          setSelect('multi_status', statusIds.map(String));
-        }
-        // 2. Free-text + per_page (project is session-scoped — see STEP 0)
-        setInput('search', String(args.query || ''));
-        setInput('per_page', String(PAGE_SIZE));
-        // 3. Users
-        if (handlerId)     setInput('handler_id', handlerId);
-        if (reporterId)    setInput('reporter_id', reporterId);
-        if (qaAssigneeId)  setInput('qa_assignee_id', qaAssigneeId);
-        // 4. Fix Schedule — custom text input (some installs name it
-        //    search_fixforecast). Maps to the fix_schedule arg.
-        if (fixForecast)   setInput('search_fixforecast', fixForecast);
-
-        // FormData reads the LIVE state of the form — including all the
-        // selectedOptions / values we just set above. Hidden fields,
-        // show_status markers and the other multicheckbox[] groups all
-        // survive untouched.
-        const fd = new FormData(filterForm);
-
-        // 5. extra_params override — last so it can fix anything our
-        //    direct manipulation missed.
-        const extra = args.extra_params || {};
-        for (const [k, v] of Object.entries(extra)) {
-          if (v == null || v === '') continue;
-          fd.delete(k); fd.delete(k.endsWith('[]') ? k.slice(0,-2) : k + '[]');
-          const key = Array.isArray(v) && !k.endsWith('[]') ? k + '[]' : k;
-          if (Array.isArray(v)) v.forEach(x => fd.append(key, String(x)));
-          else fd.set(k, String(v));
-        }
-
-        // 6. POST → Mantis stores filter in session → we fetch the list.
-        const body = new URLSearchParams();
-        for (const [k, v] of fd.entries()) body.append(k, typeof v === 'string' ? v : '');
-        filterUrl = filterForm.action;
-        const r = await fetch(filterUrl, {
-          method: 'POST',
-          credentials: 'include',
-          redirect: 'follow',
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-        }).catch(e => ({ _err: e.message }));
-        if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
-      }
+      const filterUrl = baseDir + 'view_all_set.php?' + params.toString();
+      const appliedVia = 'url-query';
+      const r = await fetch(filterUrl, { credentials: 'include' }).catch((e) => ({ _err: e.message }));
+      if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
 
       const STATUS_RE = /^(new|feedback|acknowledged|confirmed|assigned|open|resolved|closed|reopened)$/i;
       const matched = [];
