@@ -339,9 +339,9 @@ tools:
         label: |
           Mantis INTERNAL numeric project id (NOT the "#N" prefix shown
           in the picker — those are display labels). Call `list_projects`
-          first; use the `id` field from the result. For example, on
-          this install the FortiNAC project displays as "#17 FortiNAC"
-          but its internal id is 123 — pass 123 here.
+          first; use the `id` field from the result. Example: a project
+          might display as "#17 MyProject" but its internal id could be
+          123 — pass 123 here.
 
           This is the SAME field as the top-right "current project"
           switcher. The connector POSTs it to set_project.php before
@@ -351,7 +351,7 @@ tools:
           "All Projects".
 
           Alternative: pass `project_name` (human-readable, e.g.
-          "FortiNAC") and the connector resolves it to the right id by
+          "MyProject") and the connector resolves it to the right id by
           scanning the project switcher's options.
         required: false
       project_name:
@@ -359,8 +359,8 @@ tools:
         label: |
           Human-readable project name (case-insensitive). Resolved
           against the top-right project-switcher options at run time —
-          the "#17 " display prefix is stripped before matching, so
-          "FortiNAC" matches "#17 FortiNAC".
+          the "#N " display prefix is stripped before matching, so
+          "MyProject" matches "#17 MyProject".
 
           Use this OR `project_id` (id takes precedence when both are
           set). Easier to remember than the numeric id and survives
@@ -521,14 +521,14 @@ tools:
       // The top-right project switcher renders ALL projects the user
       // can see; we mine its <option> list. Match is case-insensitive
       // and ignores the "#N " display prefix Mantis prepends to each
-      // option (so "FortiNAC" matches "#17 FortiNAC"). If args.project_id
+      // option (so "MyProject" matches "#17 MyProject"). If args.project_id
       // is also set, it wins (explicit id always overrides resolution).
       let resolvedProjectId = args.project_id ? String(args.project_id) : '';
       let resolvedProjectName = '';
       if (!resolvedProjectId && args.project_name) {
         // Strip the "#N " prefix from BOTH input and option text so the
-        // resolver works whether the user passes "FortiNAC" or copies
-        // the full display label "#17 FortiNAC".
+        // resolver works whether the user passes the bare name or
+        // copies the full display label including the "#N " prefix.
         const norm = (s) => String(s).replace(/^\s*#\d+\s+/, '').trim().toLowerCase();
         const wanted = norm(args.project_name);
         const switchForm = Array.from(document.querySelectorAll('form'))
@@ -582,7 +582,7 @@ tools:
       //
       // Earlier versions tried to mutate + POST the in-DOM filter form.
       // That worked on stock MantisBT but FAILED on customized installs
-      // (Fortinet's variant, e.g.): the multicheckbox[] / show_status
+      // (e.g. heavily customized enterprise installs): the multicheckbox[] / show_status
       // serialization ends up disagreeing and Mantis returns 0 rows.
       //
       // The URL-query path is documented Mantis behaviour and avoids
