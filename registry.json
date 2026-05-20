@@ -15,7 +15,7 @@
       "id": "gitlab",
       "name": "GitLab",
       "icon": "🦊",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes.",
       "min_forge_version": "0.8.0"

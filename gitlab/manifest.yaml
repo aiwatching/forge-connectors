@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.2.0"
+version: "1.3.0"
 author: forge
 category: connector
 mode: server-side
@@ -545,18 +545,91 @@ tools:
     returns: "{ id, iid, changes: [ { old_path, new_path, diff } ], ... }"
 
   search_mrs:
-    description: "Search MRs across all visible projects."
+    description: |
+      Search merge requests across ALL projects the token can see. Filter
+      by author / assignee / reviewer (usernames, not numeric ids),
+      source / target branch, labels, free-text query, time windows.
+
+      Typical review loop:
+        1. search_mrs(reviewer_username='me', state='opened') → list MRs
+        2. get_mr_changes(project_id, mr_iid) → diff
+        3. add_mr_note(project_id, mr_iid, body=...) → post review
     protocol: http
     parameters:
       query:
         type: string
-        required: true
+        description: "Free-text search on title + description."
+        required: false
       state:
         type: string
         default: "opened"
+        description: "opened | closed | merged | locked | all"
+      author_username:
+        type: string
+        description: "Filter to MRs opened by this user (GitLab username, not display name)."
+        required: false
+      assignee_username:
+        type: string
+        description: "Filter to MRs assigned to this user."
+        required: false
+      reviewer_username:
+        type: string
+        description: "Filter to MRs where this user is a requested reviewer."
+        required: false
+      source_branch:
+        type: string
+        description: "Exact source branch name."
+        required: false
+      target_branch:
+        type: string
+        description: "Exact target branch name (e.g. 'main', 'release/7.6')."
+        required: false
+      labels:
+        type: string
+        description: "Comma-separated label names (must have ALL)."
+        required: false
+      milestone:
+        type: string
+        required: false
+      scope:
+        type: string
+        description: |
+          all | created_by_me | assigned_to_me. Default 'all' — needs token
+          with view permission for any returned MR.
+        default: "all"
+      wip:
+        type: string
+        description: "yes | no — restrict to (or exclude) Draft/WIP MRs."
+        required: false
+      created_after:
+        type: string
+        description: "ISO 8601 (e.g. 2026-05-01T00:00:00Z). MRs opened on/after this."
+        required: false
+      created_before:
+        type: string
+        required: false
+      updated_after:
+        type: string
+        description: "ISO 8601. Useful for 'MRs updated since yesterday' polls."
+        required: false
+      updated_before:
+        type: string
+        required: false
+      order_by:
+        type: string
+        description: "created_at | updated_at | title — default updated_at."
+        default: "updated_at"
+      sort:
+        type: string
+        description: "asc | desc — default desc (newest first)."
+        default: "desc"
       per_page:
         type: number
         default: 25
+      page:
+        type: number
+        description: "1-based page number for pagination."
+        required: false
     request:
       method: GET
       url: '{settings.base_url}/api/v4/merge_requests'
@@ -566,7 +639,29 @@ tools:
       query:
         search: '{args.query}'
         state: '{args.state}'
+        author_username: '{args.author_username}'
+        assignee_username: '{args.assignee_username}'
+        reviewer_username: '{args.reviewer_username}'
+        source_branch: '{args.source_branch}'
+        target_branch: '{args.target_branch}'
+        labels: '{args.labels}'
+        milestone: '{args.milestone}'
+        scope: '{args.scope}'
+        wip: '{args.wip}'
+        created_after: '{args.created_after}'
+        created_before: '{args.created_before}'
+        updated_after: '{args.updated_after}'
+        updated_before: '{args.updated_before}'
+        order_by: '{args.order_by}'
+        sort: '{args.sort}'
         per_page: '{args.per_page}'
+        page: '{args.page}'
+    returns: |
+      Array of MR objects: id, iid, project_id, title, description, state,
+      author, assignees[], reviewers[], source_branch, target_branch,
+      labels[], web_url, created_at, updated_at, merge_status,
+      draft (=WIP), …. Pair with get_mr_changes / list_mr_notes /
+      add_mr_note for review workflows.
 
   create_mr:
     description: |
