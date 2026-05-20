@@ -6,7 +6,7 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "🐞",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
       "min_forge_version": "0.8.0"
@@ -24,7 +24,7 @@
       "id": "teams",
       "name": "Microsoft Teams",
       "icon": "💬",
-      "version": "0.8.1",
+      "version": "0.9.0",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
       "min_forge_version": "0.8.0"
@@ -33,7 +33,7 @@
       "id": "pmdb",
       "name": "PMDB",
       "icon": "🏭",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": "forge",
       "description": "Read-only DOM extraction from PMDB (Product Management Database) using the user's logged-in browser session.",
       "min_forge_version": "0.8.0"

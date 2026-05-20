@@ -1,7 +1,7 @@
 id: pmdb
 name: PMDB
 icon: "🏭"
-version: "0.2.0"
+version: "0.3.0"
 author: forge
 category: connector
 mode: browser-side
@@ -27,6 +27,10 @@ settings:
 
 host_match: "{base_url}/*"
 login_redirect: "/login"
+
+test:
+  description: "Opens a PMDB tab; ✓ if logged in, ✗ if redirected to /login."
+  probe: browser
 
 tools:
   list_prds:

@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.5.0"
+version: "0.6.0"
 author: forge
 category: connector
 mode: browser-side
@@ -31,6 +31,10 @@ settings:
 # Plugin-level: how the extension's runner finds / opens authenticated tabs.
 host_match: "{base_url}/*"
 login_redirect: "/login_page.php"
+
+test:
+  description: "Opens a Mantis tab; ✓ if the session is alive, ✗ if you're not logged in."
+  probe: browser
 
 tools:
   list_my_bugs:
