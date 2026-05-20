@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-19",
+  "updated_at": "2026-05-20",
   "connectors": [
     {
       "id": "mantis",
@@ -15,7 +15,7 @@
       "id": "gitlab",
       "name": "GitLab",
       "icon": "🦊",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes.",
       "min_forge_version": "0.8.0"
@@ -42,7 +42,7 @@
       "id": "github-api",
       "name": "GitHub API",
       "icon": "🐙",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": "forge",
       "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
       "min_forge_version": "0.8.0"

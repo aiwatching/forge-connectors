@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.1.0"
+version: "1.2.0"
 author: forge
 category: connector
 mode: server-side
@@ -31,6 +31,16 @@ settings:
       Stored AES-256-GCM-encrypted in ~/.forge/data/plugin-configs.json
       with the key at ~/.forge/data/.encrypt-key.
     required: true
+
+test:
+  description: "GET /api/v4/user — verifies base_url + PAT reach GitLab."
+  request:
+    method: GET
+    url: "{settings.base_url}/api/v4/user"
+    headers:
+      PRIVATE-TOKEN: "{settings.token}"
+  ok_template: "Authenticated as {{username}} ({{name}})"
+  timeout_ms: 15000
 
 tools:
   # ─── User ──────────────────────────────────────────────────

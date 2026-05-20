@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "forge": {
+      "type": "sse",
+      "url": "http://localhost:8406/sse"
+    },
+    "chrome": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp"
+      ]
+    }
+  }
+}

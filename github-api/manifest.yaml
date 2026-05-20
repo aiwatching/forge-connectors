@@ -1,7 +1,7 @@
 id: github-api
 name: GitHub API
 icon: 🐙
-version: 0.1.0
+version: 0.2.0
 author: forge
 description: |
   GitHub REST API connector — runs entirely server-side (no browser tab
@@ -22,6 +22,17 @@ settings:
     label: GitHub token (optional)
     description: Personal access token. Leave empty for public endpoints.
     secret: true
+
+test:
+  description: "GET /user — verifies token if set; falls back to GET /rate_limit which is public."
+  request:
+    method: GET
+    url: "https://api.github.com/rate_limit"
+    headers:
+      Accept: "application/vnd.github+json"
+      Authorization: "Bearer {settings.token}"
+  ok_template: "Rate: {{rate.remaining}}/{{rate.limit}} remaining"
+  timeout_ms: 10000
 
 tools:
   get_repo:
