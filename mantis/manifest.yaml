@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.9.0"
+version: "0.10.0"
 author: forge
 category: connector
 mode: browser-side
@@ -349,6 +349,22 @@ tools:
           the project is purely PHP-session state). STRONGLY RECOMMENDED
           to set on every job; without it the search runs against
           "All Projects".
+
+          Alternative: pass `project_name` (human-readable, e.g.
+          "FortiNAC") and the connector resolves it to the right id by
+          scanning the project switcher's options.
+        required: false
+      project_name:
+        type: string
+        label: |
+          Human-readable project name (case-insensitive). Resolved
+          against the top-right project-switcher options at run time —
+          the "#17 " display prefix is stripped before matching, so
+          "FortiNAC" matches "#17 FortiNAC".
+
+          Use this OR `project_id` (id takes precedence when both are
+          set). Easier to remember than the numeric id and survives
+          Mantis reordering projects.
         required: false
       fix_schedule:
         type: string
@@ -501,6 +517,38 @@ tools:
       // FormData-ify it, then override only the fields we care about.
       const baseDir = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}`;
 
+      // ── Resolve args.project_name → numeric id ────────────────
+      // The top-right project switcher renders ALL projects the user
+      // can see; we mine its <option> list. Match is case-insensitive
+      // and ignores the "#N " display prefix Mantis prepends to each
+      // option (so "FortiNAC" matches "#17 FortiNAC"). If args.project_id
+      // is also set, it wins (explicit id always overrides resolution).
+      let resolvedProjectId = args.project_id ? String(args.project_id) : '';
+      let resolvedProjectName = '';
+      if (!resolvedProjectId && args.project_name) {
+        const wantedRaw = String(args.project_name).trim().toLowerCase();
+        // Find the switcher's select. It's the one inside a form that
+        // posts to set_project.php (different from the filter form).
+        const switchForm = Array.from(document.querySelectorAll('form'))
+          .find(f => /set_project\.php/.test(f.action || ''));
+        const sel = switchForm?.querySelector('select[name="project_id"]');
+        const opts = sel ? Array.from(sel.options) : [];
+        const norm = (s) => s.replace(/^#\d+\s+/, '').trim().toLowerCase();
+        // Exact match first (preferred over substring)
+        let hit = opts.find((o) => norm(o.text) === wantedRaw);
+        // Substring fallback
+        if (!hit) hit = opts.find((o) => norm(o.text).includes(wantedRaw));
+        if (hit) {
+          resolvedProjectId = String(hit.value);
+          resolvedProjectName = hit.text.trim();
+        } else {
+          return {
+            bugs: [], total: 0,
+            _error: `project_name "${args.project_name}" did not match any project the user can see — try mantis.list_projects to see the available names + ids`,
+          };
+        }
+      }
+
       // ── STEP 0: switch the PHP-session "current project" (the
       // top-right project switcher in the page header) BEFORE any
       // filter work. Probed live with chrome MCP: the filter form on
@@ -514,7 +562,7 @@ tools:
       // same session-leak class as handler_id / reporter_id.
       //
       // Single POST, ~50 ms. No-op if the session already matches.
-      const projectIdForSession = String(args.project_id || '0');
+      const projectIdForSession = resolvedProjectId || '0';
       try {
         const fdProj = new FormData();
         fdProj.set('project_id', projectIdForSession);
@@ -560,7 +608,15 @@ tools:
       if (reporterId)       params.set('reporter_id', reporterId);
       if (qaAssigneeId)     params.set('qa_assignee_id', qaAssigneeId);
       if (fixForecast)      params.set('search_fixforecast', fixForecast);
-      for (const id of statusIds) params.append('status_id[]', String(id));
+      // Status: Mantis docs say `status_id[]=N` but customized installs
+      // (Fortinet's variant) only honour the hidden-field name
+      // `show_status=10,20,50` (comma-separated). status_id[] silently
+      // returns ALL statuses on those installs — confirmed live with
+      // chrome MCP: show_status=50 returns 152 assigned bugs whereas
+      // status_id[]=50 returns 1183 (= no filter applied). Use
+      // show_status; standard Mantis ignores unknown URL params so
+      // this also works on stock installs without breaking anything.
+      if (statusIds.length > 0) params.set('show_status', statusIds.join(','));
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
       const extra = args.extra_params || {};
@@ -723,7 +779,8 @@ tools:
         pages_walked: pagesWalked,
         query: args.query || '',
         status: args.status || 'open',
-        project_id: args.project_id || null,
+        project_id: resolvedProjectId || (args.project_id || null),
+        project_name: resolvedProjectName || (args.project_name || ''),
         fix_schedule: args.fix_schedule || '',
         assignee: args.assignee || '',
         reporter: args.reporter || '',
