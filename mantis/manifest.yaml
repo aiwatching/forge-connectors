@@ -608,14 +608,8 @@ tools:
       if (reporterId)       params.set('reporter_id', reporterId);
       if (qaAssigneeId)     params.set('qa_assignee_id', qaAssigneeId);
       if (fixForecast)      params.set('search_fixforecast', fixForecast);
-      // Status: Mantis docs say `status_id[]=N` but customized installs
-      // (Fortinet's variant) only honour the hidden-field name
-      // `show_status=10,20,50` (comma-separated). status_id[] silently
-      // returns ALL statuses on those installs — confirmed live with
-      // chrome MCP: show_status=50 returns 152 assigned bugs whereas
-      // status_id[]=50 returns 1183 (= no filter applied). Use
-      // show_status; standard Mantis ignores unknown URL params so
-      // this also works on stock installs without breaking anything.
+      // Customized installs only honour `show_status`; the documented
+      // `status_id[]` is silently ignored on those.
       if (statusIds.length > 0) params.set('show_status', statusIds.join(','));
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
