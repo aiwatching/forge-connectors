@@ -1,0 +1,178 @@
+id: pmdb
+name: PMDB
+icon: "🏭"
+version: "0.2.0"
+author: forge
+category: connector
+mode: browser-side
+description: |
+  Forge PMDB (Product Management Database) — read-only DOM extraction
+  from the user's logged-in browser session.
+
+  v0.2.0 covers Hardware PRDs only: list with optional client-side filter
+  and single-PRD detail extraction (View tab metadata + revision history).
+  Other sections (Software, Datasheet, QSG, Roadmap, PSIRT) can be added
+  incrementally as needed.
+
+  Selectors verified on https://pmdb.Forge.com/Hardware/list and
+  /Hardware/PRD/1871 via chrome-devtools-mcp on 2026-05-16.
+
+settings:
+  base_url:
+    type: string
+    label: PMDB base URL
+    description: "Forge internal PMDB host"
+    default: "https://pmdb.Forge.com"
+    required: true
+
+host_match: "{base_url}/*"
+login_redirect: "/login"
+
+tools:
+  list_prds:
+    description: |
+      List Hardware PRDs (Product Requirement Documents). Returns
+      product / status / LPA status / detail URL / PRD id. Supports
+      optional client-side substring filter on product name + status.
+    parameters:
+      query:
+        type: string
+        label: Substring to match against product name (case-insensitive)
+        required: false
+      status:
+        type: string
+        label: Status filter (e.g. Active, EOL — exact match, case-insensitive)
+        required: false
+      limit:
+        type: number
+        default: 50
+    returns: "{ prds: [...], total, filtered }"
+    page:
+      url: "{base_url}/Hardware/list"
+      on_target: "/Hardware/list"
+    script: |
+      const tables = Array.from(document.querySelectorAll('table'));
+      const mainTable = tables.reduce((best, t) => {
+        const rows = t.querySelectorAll('tr').length;
+        return (!best || rows > best.querySelectorAll('tr').length) ? t : best;
+      }, null);
+      if (!mainTable) {
+        return { prds: [], total: 0, _error: 'PRD table not found on ' + location.pathname };
+      }
+
+      const headerRow = mainTable.querySelector('thead tr') || mainTable.querySelector('tr');
+      const headers = Array.from(headerRow?.querySelectorAll('th, td') || []).map(c => c.textContent.trim().toLowerCase());
+      const colIdx = (name) => headers.findIndex(h => h === name.toLowerCase() || h.includes(name.toLowerCase()));
+
+      const productIdx = colIdx('product');
+      const statusIdx = colIdx('status');
+      const lpaIdx = colIdx('lpa');
+
+      const dataRows = Array.from(mainTable.querySelectorAll('tbody tr'));
+      const all = dataRows.map(r => {
+        const cells = Array.from(r.querySelectorAll('td'));
+        const link = r.querySelector('a[href*="/Hardware/PRD/"]');
+        const href = link?.getAttribute('href') || '';
+        const idMatch = href.match(/\/Hardware\/PRD\/(\d+)/);
+        const product = productIdx >= 0 ? cells[productIdx]?.textContent.trim() : '';
+        const status = statusIdx >= 0 ? cells[statusIdx]?.textContent.trim() : '';
+        const lpa = lpaIdx >= 0 ? cells[lpaIdx]?.textContent.trim() : '';
+        return {
+          prd_id: idMatch ? Number(idMatch[1]) : 0,
+          product,
+          status,
+          lpa_status: lpa,
+          url: link?.href || '',
+        };
+      }).filter(p => p.prd_id);
+
+      const q = (args.query || '').toLowerCase().trim();
+      const s = (args.status || '').toLowerCase().trim();
+      const filtered = all.filter(p => {
+        if (q && !p.product.toLowerCase().includes(q)) return false;
+        if (s && p.status.toLowerCase() !== s) return false;
+        return true;
+      });
+
+      return {
+        prds: filtered.slice(0, args.limit || 50),
+        total: all.length,
+        filtered: filtered.length,
+        _page: location.href,
+      };
+
+  get_prd:
+    description: |
+      Get full details for a single Hardware PRD by ID. Returns metadata
+      from the View tab (priority, assignee, status, ETA, manager, group,
+      project families, etc.) plus the most recent revision entry.
+    parameters:
+      prd_id:
+        type: number
+        label: PRD ID (numeric, e.g. 1871)
+        required: true
+    returns: "{ prd_id, title, fields: {...}, recent_revisions: [...], tabs: [...] }"
+    page:
+      url: "{base_url}/Hardware/PRD/{args.prd_id}"
+      on_target: "/Hardware/PRD/{args.prd_id}"
+    script: |
+      // Title is in the page heading: "FIM-7921F (Purchase Request ID: PRID1001871)"
+      const titleEl = document.querySelector('h1, h2.page-header, .page-header h1, .page-header h2');
+      const title = titleEl?.textContent?.trim() || document.title.replace(/^PMDB \| /, '');
+
+      // Tabs list — useful for caller to know what else is available
+      const tabs = Array.from(document.querySelectorAll('[role="tab"], .nav-tabs a, ul.nav-tabs li a'))
+        .map(t => t.textContent.trim())
+        .filter(Boolean);
+
+      // Walk label → value pairs from form-group / row layout. PMDB is a
+      // mix of Bootstrap form-group and table-based field layouts; collect
+      // both and de-dup by label.
+      const fields = {};
+      const containers = Array.from(document.querySelectorAll('.form-group, .row'));
+      containers.forEach(g => {
+        const label = g.querySelector('label, .control-label, .field-label');
+        if (!label) return;
+        const labelText = label.textContent.trim();
+        if (!labelText || fields[labelText]) return;
+        const valueCandidates = [
+          g.querySelector('.form-control-static'),
+          g.querySelector('input[type="text"]'),
+          g.querySelector('input[type="hidden"]'),
+          g.querySelector('select option[selected]'),
+          g.querySelector('textarea'),
+          g.querySelector('.value, .field-value'),
+          g.querySelector('td:not(:first-child)'),
+          g.querySelector('p, span:not(.label):not(.control-label):not(.help-block)'),
+        ].filter(Boolean);
+        const v = valueCandidates[0];
+        if (!v) return;
+        let value = '';
+        if (v.tagName === 'INPUT' || v.tagName === 'TEXTAREA') value = v.value;
+        else value = v.textContent?.trim() || '';
+        if (value) fields[labelText] = value.slice(0, 500);
+      });
+
+      // Revision history — typically the first table on the View tab
+      const revTable = Array.from(document.querySelectorAll('table'))
+        .find(t => /revision/i.test(t.previousElementSibling?.textContent || '') ||
+                  /revision/i.test(t.querySelector('th')?.textContent || ''));
+      const recent_revisions = revTable
+        ? Array.from(revTable.querySelectorAll('tbody tr')).slice(0, 5).map(r => {
+            const c = Array.from(r.querySelectorAll('td')).map(x => x.textContent.trim());
+            return { revision: c[0] || '', date: c[1] || '', author: c[2] || '', comments: c[3]?.slice(0, 200) || '' };
+          })
+        : [];
+
+      // Extract PRID from heading for cross-reference
+      const pridMatch = title.match(/PRID(\d+)/i);
+
+      return {
+        prd_id: args.prd_id,
+        prid: pridMatch ? 'PRID' + pridMatch[1] : '',
+        title,
+        fields,
+        recent_revisions,
+        tabs,
+        url: location.href,
+      };

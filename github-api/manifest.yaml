@@ -1,0 +1,93 @@
+id: github-api
+name: GitHub API
+icon: 🐙
+version: 0.1.0
+author: forge
+description: |
+  GitHub REST API connector — runs entirely server-side (no browser tab
+  needed). Set settings.token to a personal access token for private
+  repos / higher rate limits; public-only endpoints work unauthenticated.
+
+  Demonstrates the `protocol: http` runtime: the connector declares the
+  request shape and Forge issues it from the server. Templates expand
+  {settings.*} (user-supplied) and {args.*} (LLM-supplied) into url,
+  headers, query, and body.
+
+category: connector
+mode: server-side
+
+settings:
+  token:
+    type: string
+    label: GitHub token (optional)
+    description: Personal access token. Leave empty for public endpoints.
+    secret: true
+
+tools:
+  get_repo:
+    description: |
+      Fetch metadata for a GitHub repository (description, stars, default
+      branch, etc.).
+    protocol: http
+    parameters:
+      repo:
+        type: string
+        required: true
+        description: 'Repository in "owner/name" form (e.g. "anthropics/anthropic-sdk-python").'
+    request:
+      method: GET
+      url: 'https://api.github.com/repos/{args.repo}'
+      headers:
+        Accept: 'application/vnd.github+json'
+        Authorization: 'Bearer {settings.token}'
+        User-Agent: 'forge-github-connector'
+
+  list_issues:
+    description: |
+      List issues in a GitHub repository. Default returns open issues
+      (most recent first). Use state="closed" or state="all" to widen.
+    protocol: http
+    parameters:
+      repo:
+        type: string
+        required: true
+        description: 'Repository in "owner/name" form.'
+      state:
+        type: string
+        description: 'open | closed | all (default: open).'
+      per_page:
+        type: number
+        description: 'Results per page (1–100, default 30).'
+    request:
+      method: GET
+      url: 'https://api.github.com/repos/{args.repo}/issues'
+      headers:
+        Accept: 'application/vnd.github+json'
+        Authorization: 'Bearer {settings.token}'
+        User-Agent: 'forge-github-connector'
+      query:
+        state: '{args.state}'
+        per_page: '{args.per_page}'
+
+  search_repos:
+    description: |
+      Search GitHub repositories by keyword. Sorted by stars desc by
+      default. Use q to pass GitHub search qualifiers
+      (e.g. "language:go forks:>100 created:>2024").
+    protocol: http
+    parameters:
+      q:
+        type: string
+        required: true
+        description: 'Search query (GitHub search syntax).'
+    request:
+      method: GET
+      url: 'https://api.github.com/search/repositories'
+      headers:
+        Accept: 'application/vnd.github+json'
+        Authorization: 'Bearer {settings.token}'
+        User-Agent: 'forge-github-connector'
+      query:
+        q: '{args.q}'
+        sort: stars
+        order: desc

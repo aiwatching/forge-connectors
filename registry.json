@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "updated_at": "2026-05-19",
+  "connectors": [
+    {
+      "id": "mantis",
+      "name": "MantisBT",
+      "icon": "🐞",
+      "version": "0.5.0",
+      "author": "forge",
+      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
+      "min_forge_version": "0.8.0"
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "icon": "🦊",
+      "version": "1.1.0",
+      "author": "forge",
+      "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes.",
+      "min_forge_version": "0.8.0"
+    },
+    {
+      "id": "teams",
+      "name": "Microsoft Teams",
+      "icon": "💬",
+      "version": "0.8.1",
+      "author": "forge",
+      "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
+      "min_forge_version": "0.8.0"
+    },
+    {
+      "id": "pmdb",
+      "name": "PMDB",
+      "icon": "🏭",
+      "version": "0.2.0",
+      "author": "forge",
+      "description": "Read-only DOM extraction from PMDB (Product Management Database) using the user's logged-in browser session.",
+      "min_forge_version": "0.8.0"
+    },
+    {
+      "id": "github-api",
+      "name": "GitHub API",
+      "icon": "🐙",
+      "version": "0.1.0",
+      "author": "forge",
+      "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
+      "min_forge_version": "0.8.0"
+    }
+  ]
+}

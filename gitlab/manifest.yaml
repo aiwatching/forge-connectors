@@ -1,0 +1,860 @@
+id: gitlab
+name: GitLab
+icon: "🦊"
+version: "1.1.0"
+author: forge
+category: connector
+mode: server-side
+description: |
+  GitLab REST API connector (server-side via Personal Access Token).
+  Covers issues, merge requests, projects, pipelines, branches, files,
+  and notes — about 25 tools. All requests run inside Forge — no
+  browser tab needed — so it works from chat, jobs, pipelines, and
+  the CLI alike.
+
+  Replaces the 0.2.x browser-DOM-scraping connector.
+
+settings:
+  base_url:
+    type: string
+    label: GitLab base URL (no trailing /api/v4)
+    description: e.g. https://gitlab.com or https://gitlab.example.com
+    required: true
+  token:
+    type: secret
+    label: Personal Access Token
+    description: |
+      Create at <base_url>/-/user_settings/personal_access_tokens.
+      Suggested scopes: `api` (full) or `read_api + write_repository`
+      if you only need browse + MR/comment.
+
+      Stored AES-256-GCM-encrypted in ~/.forge/data/plugin-configs.json
+      with the key at ~/.forge/data/.encrypt-key.
+    required: true
+
+tools:
+  # ─── User ──────────────────────────────────────────────────
+  me:
+    description: "Get the current authenticated user (id, username, email, name)."
+    protocol: http
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/user'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+    returns: "{ id, username, name, email, avatar_url, web_url, state }"
+
+  # ─── Projects ──────────────────────────────────────────────
+  list_my_projects:
+    description: |
+      List projects the authenticated user is a member of. Returns common
+      fields you need (id, path_with_namespace, name, default_branch,
+      web_url). Use `find_project` if you want to search by name.
+    protocol: http
+    parameters:
+      per_page:
+        type: number
+        default: 50
+      order_by:
+        type: string
+        default: "last_activity_at"
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        membership: 'true'
+        simple: 'true'
+        per_page: '{args.per_page}'
+        order_by: '{args.order_by}'
+    returns: "[ { id, name, path_with_namespace, default_branch, web_url, ... } ]"
+
+  find_project:
+    description: |
+      Search projects by name / path. Returns top matches with numeric ids —
+      use those as `project_id` for other tools so you don't need to
+      URL-encode the path.
+    protocol: http
+    parameters:
+      query:
+        type: string
+        required: true
+      per_page:
+        type: number
+        default: 10
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        search: '{args.query}'
+        simple: 'true'
+        per_page: '{args.per_page}'
+    returns: "[ { id, name, path_with_namespace, web_url } ]"
+
+  get_project:
+    description: "Get one project by numeric id. Use find_project to look up id from a name."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  list_branches:
+    description: "List branches in a project (default branch shown as `default_branch` on get_project)."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      per_page:
+        type: number
+        default: 50
+      search:
+        type: string
+        required: false
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/repository/branches'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        per_page: '{args.per_page}'
+        search: '{args.search}'
+
+  get_branch:
+    description: "Get a single branch by name."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      branch:
+        type: string
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/repository/branches/{args.branch}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  read_file:
+    description: |
+      Read a file from a project at a given ref (branch / tag / sha). Returns
+      raw text. For large files use the GitLab UI directly.
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      file_path:
+        type: string
+        required: true
+        description: "File path inside the repo. Slashes are fine; GitLab handles them."
+      ref:
+        type: string
+        default: "main"
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/repository/files/{args.file_path}/raw'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'text/plain'
+      query:
+        ref: '{args.ref}'
+
+  list_commits:
+    description: "List commits on a branch / ref."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      ref_name:
+        type: string
+        description: "Branch / tag / sha"
+        default: "main"
+      per_page:
+        type: number
+        default: 25
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/repository/commits'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        ref_name: '{args.ref_name}'
+        per_page: '{args.per_page}'
+
+  # ─── Issues ────────────────────────────────────────────────
+  list_my_issues:
+    description: "List issues assigned to me across all projects. state ∈ {opened, closed, all}."
+    protocol: http
+    parameters:
+      state:
+        type: string
+        default: "opened"
+      labels:
+        type: string
+        description: "Comma-separated label names"
+        required: false
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/issues'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        scope: 'assigned_to_me'
+        state: '{args.state}'
+        labels: '{args.labels}'
+        per_page: '{args.per_page}'
+    returns: "[ { iid, project_id, title, state, labels, milestone, assignees, web_url, ... } ]"
+
+  list_issues:
+    description: "List issues in a project with optional filters."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      state:
+        type: string
+        default: "opened"
+      labels:
+        type: string
+        required: false
+      milestone:
+        type: string
+        required: false
+      assignee_username:
+        type: string
+        required: false
+      search:
+        type: string
+        description: "Free-text search on title + description"
+        required: false
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        state: '{args.state}'
+        labels: '{args.labels}'
+        milestone: '{args.milestone}'
+        assignee_username: '{args.assignee_username}'
+        search: '{args.search}'
+        per_page: '{args.per_page}'
+
+  get_issue:
+    description: "Get one issue by project + iid (project-scoped issue number)."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      issue_iid:
+        type: number
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues/{args.issue_iid}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  search_issues:
+    description: "Search issues across ALL projects visible to the user."
+    protocol: http
+    parameters:
+      query:
+        type: string
+        required: true
+      state:
+        type: string
+        default: "opened"
+      per_page:
+        type: number
+        default: 25
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/issues'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        search: '{args.query}'
+        state: '{args.state}'
+        per_page: '{args.per_page}'
+
+  create_issue:
+    description: "Create an issue in a project. Returns the created issue including iid + web_url."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+        required: false
+      labels:
+        type: string
+        required: false
+      assignee_ids:
+        type: string
+        description: "Comma-separated user ids"
+        required: false
+      milestone_id:
+        type: number
+        required: false
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        title: '{args.title}'
+        description: '{args.description}'
+        labels: '{args.labels}'
+        assignee_ids: '{args.assignee_ids}'
+        milestone_id: '{args.milestone_id}'
+
+  update_issue:
+    description: |
+      Partial update — only fields you set change. Common uses:
+      change state ('close' / 'reopen'), reassign, edit labels.
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      issue_iid:
+        type: number
+        required: true
+      title:
+        type: string
+        required: false
+      description:
+        type: string
+        required: false
+      state_event:
+        type: string
+        description: "'close' | 'reopen'"
+        required: false
+      labels:
+        type: string
+        required: false
+      assignee_ids:
+        type: string
+        required: false
+    request:
+      method: PUT
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues/{args.issue_iid}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        title: '{args.title}'
+        description: '{args.description}'
+        state_event: '{args.state_event}'
+        labels: '{args.labels}'
+        assignee_ids: '{args.assignee_ids}'
+
+  list_issue_notes:
+    description: "List comments on an issue."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      issue_iid:
+        type: number
+        required: true
+      per_page:
+        type: number
+        default: 50
+      sort:
+        type: string
+        default: "asc"
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues/{args.issue_iid}/notes'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        per_page: '{args.per_page}'
+        sort: '{args.sort}'
+
+  add_issue_note:
+    description: "Post a comment on an issue."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      issue_iid:
+        type: number
+        required: true
+      body:
+        type: string
+        required: true
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/issues/{args.issue_iid}/notes'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        body: '{args.body}'
+
+  # ─── Merge requests ────────────────────────────────────────
+  list_my_mrs:
+    description: "List MRs assigned to me across all projects."
+    protocol: http
+    parameters:
+      state:
+        type: string
+        default: "opened"
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        scope: 'assigned_to_me'
+        state: '{args.state}'
+        per_page: '{args.per_page}'
+
+  list_mrs:
+    description: "List merge requests in a project with filters."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      state:
+        type: string
+        default: "opened"
+        description: "opened | closed | merged | locked | all"
+      source_branch:
+        type: string
+        required: false
+      target_branch:
+        type: string
+        required: false
+      labels:
+        type: string
+        required: false
+      search:
+        type: string
+        required: false
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        state: '{args.state}'
+        source_branch: '{args.source_branch}'
+        target_branch: '{args.target_branch}'
+        labels: '{args.labels}'
+        search: '{args.search}'
+        per_page: '{args.per_page}'
+
+  get_mr:
+    description: "Get a merge request by project + iid."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  get_mr_changes:
+    description: "Get the diff + changed files for a merge request."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}/changes'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+    returns: "{ id, iid, changes: [ { old_path, new_path, diff } ], ... }"
+
+  search_mrs:
+    description: "Search MRs across all visible projects."
+    protocol: http
+    parameters:
+      query:
+        type: string
+        required: true
+      state:
+        type: string
+        default: "opened"
+      per_page:
+        type: number
+        default: 25
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        search: '{args.query}'
+        state: '{args.state}'
+        per_page: '{args.per_page}'
+
+  create_mr:
+    description: |
+      Create a merge request. Common pattern after a Forge pipeline pushes a
+      fix branch: create_mr(project_id, source_branch=fix/..., target_branch=main, title=..., description=...).
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      source_branch:
+        type: string
+        required: true
+      target_branch:
+        type: string
+        required: true
+      title:
+        type: string
+        required: true
+      description:
+        type: string
+        required: false
+      remove_source_branch:
+        type: boolean
+        default: true
+      squash:
+        type: boolean
+        default: false
+      assignee_ids:
+        type: string
+        description: "Comma-separated user ids"
+        required: false
+      labels:
+        type: string
+        required: false
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        source_branch: '{args.source_branch}'
+        target_branch: '{args.target_branch}'
+        title: '{args.title}'
+        description: '{args.description}'
+        remove_source_branch: '{args.remove_source_branch}'
+        squash: '{args.squash}'
+        assignee_ids: '{args.assignee_ids}'
+        labels: '{args.labels}'
+
+  update_mr:
+    description: "Partial update — title / description / state_event ('close' | 'reopen') / labels / assignees."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+      title:
+        type: string
+        required: false
+      description:
+        type: string
+        required: false
+      state_event:
+        type: string
+        required: false
+      labels:
+        type: string
+        required: false
+      assignee_ids:
+        type: string
+        required: false
+    request:
+      method: PUT
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        title: '{args.title}'
+        description: '{args.description}'
+        state_event: '{args.state_event}'
+        labels: '{args.labels}'
+        assignee_ids: '{args.assignee_ids}'
+
+  approve_mr:
+    description: "Approve a merge request (requires Developer+ role)."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}/approve'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  merge_mr:
+    description: "Actually merge a merge request. Verify CI passed + approvals met first."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+      merge_commit_message:
+        type: string
+        required: false
+      should_remove_source_branch:
+        type: boolean
+        default: true
+      squash:
+        type: boolean
+        default: false
+      merge_when_pipeline_succeeds:
+        type: boolean
+        default: false
+    request:
+      method: PUT
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}/merge'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        merge_commit_message: '{args.merge_commit_message}'
+        should_remove_source_branch: '{args.should_remove_source_branch}'
+        squash: '{args.squash}'
+        merge_when_pipeline_succeeds: '{args.merge_when_pipeline_succeeds}'
+
+  list_mr_notes:
+    description: "List comments on a merge request."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+      per_page:
+        type: number
+        default: 50
+      sort:
+        type: string
+        default: "asc"
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}/notes'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        per_page: '{args.per_page}'
+        sort: '{args.sort}'
+
+  add_mr_note:
+    description: "Post a comment on a merge request."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      mr_iid:
+        type: number
+        required: true
+      body:
+        type: string
+        required: true
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/merge_requests/{args.mr_iid}/notes'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      body:
+        body: '{args.body}'
+
+  # ─── Pipelines / CI ────────────────────────────────────────
+  list_pipelines:
+    description: "List pipelines for a project. Filter by ref / status / username."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      ref:
+        type: string
+        required: false
+      status:
+        type: string
+        description: "running | pending | success | failed | canceled | skipped | manual"
+        required: false
+      username:
+        type: string
+        required: false
+      per_page:
+        type: number
+        default: 20
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/pipelines'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        ref: '{args.ref}'
+        status: '{args.status}'
+        username: '{args.username}'
+        per_page: '{args.per_page}'
+
+  get_pipeline:
+    description: "Get one pipeline's details by id."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      pipeline_id:
+        type: number
+        required: true
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/pipelines/{args.pipeline_id}'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  list_pipeline_jobs:
+    description: "List jobs in a pipeline."
+    protocol: http
+    parameters:
+      project_id:
+        type: number
+        required: true
+      pipeline_id:
+        type: number
+        required: true
+      scope:
+        type: string
+        description: "Comma list of: running, pending, finished, branches, tags. Empty = all."
+        required: false
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/pipelines/{args.pipeline_id}/jobs'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        scope: '{args.scope}'
+
+  retry_pipeline:
+    description: "Retry failed jobs in a pipeline."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      pipeline_id:
+        type: number
+        required: true
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/pipelines/{args.pipeline_id}/retry'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+
+  cancel_pipeline:
+    description: "Cancel all running jobs in a pipeline."
+    protocol: http
+    destructive: true
+    parameters:
+      project_id:
+        type: number
+        required: true
+      pipeline_id:
+        type: number
+        required: true
+    request:
+      method: POST
+      url: '{settings.base_url}/api/v4/projects/{args.project_id}/pipelines/{args.pipeline_id}/cancel'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'

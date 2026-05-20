@@ -1,0 +1,964 @@
+id: mantis
+name: MantisBT
+icon: "🐞"
+version: "0.5.0"
+author: forge
+category: connector
+mode: browser-side
+description: |
+  Read + comment on MantisBT bugs from the user's logged-in browser session.
+
+  All tool scripts are declared in this manifest and shipped to the Forge
+  browser extension's generic runner. No extension code changes when adding
+  or updating Mantis tools — bump `version` and refresh.
+
+  Reuses the user's PHPSESSID cookie. Targets Mantis 1.x classic URL style
+  (bug_view_page.php?bug_id=N). Column layout in #bug_list varies per
+  instance (Mantis "Manage Columns"); scripts build a header → index map
+  at runtime instead of hardcoding cell positions.
+
+settings:
+  base_url:
+    type: string
+    label: Mantis base URL
+    description: "e.g. https://mantis.mycompany.com (no trailing slash)"
+    required: true
+  default_project:
+    type: string
+    label: Default project name
+    description: "Optional — used when no project specified in queries"
+
+# Plugin-level: how the extension's runner finds / opens authenticated tabs.
+host_match: "{base_url}/*"
+login_redirect: "/login_page.php"
+
+tools:
+  list_my_bugs:
+    description: |
+      List bugs visible to the current user via their saved Mantis filter
+      ("View All Issues" page). Returns id, summary, status, severity,
+      priority, project, last_updated.
+    parameters:
+      status:
+        type: select
+        label: Status filter (client-side)
+        options: ["open", "closed", "all"]
+        default: "open"
+      limit:
+        type: number
+        label: Max results
+        default: 50
+    returns: "{ bugs: [...], total, rawCount, _page, _columnsDetected }"
+    page:
+      url: "{base_url}/view_all_bug_page.php"
+      on_target: "/view_all_bug_page.php"
+    script: |
+      const list = document.querySelector('#bug_list');
+      if (!list) {
+        return { bugs: [], total: 0, _error: '#bug_list not found on ' + location.pathname };
+      }
+
+      const allRows = Array.from(list.querySelectorAll('tr'));
+      const headerRow = allRows.find(r => r.className === 'row-category');
+      const dataRows = allRows.filter(r => r.querySelector('input[name*="bug"]'));
+
+      const headerIdx = {};
+      if (headerRow) {
+        Array.from(headerRow.querySelectorAll('td, th')).forEach((c, i) => {
+          const name = (c.textContent || '').trim().toLowerCase();
+          if (name) headerIdx[name] = i;
+        });
+      }
+
+      const col = (cells, header) => {
+        const idx = headerIdx[header.toLowerCase()];
+        if (idx === undefined) return '';
+        return (cells[idx]?.innerText || '').trim();
+      };
+
+      const STATUS_RE = /^(new|feedback|acknowledged|confirmed|assigned|open|resolved|closed|reopened)$/i;
+      const FILTERS = {
+        open: /^(new|feedback|acknowledged|confirmed|assigned|open|reopened)$/i,
+        closed: /^(resolved|closed)$/i,
+        all: /./,
+      };
+
+      const all = dataRows.map(r => {
+        const cells = Array.from(r.querySelectorAll('td'));
+        const checkbox = r.querySelector('input[type="checkbox"][name*="bug"]');
+        const link = r.querySelector('a[href*="bug_view_page.php?bug_id="]');
+        const id = checkbox?.value
+          ? Number(checkbox.value)
+          : Number(link?.href.match(/bug_id=(\d+)/)?.[1] || 0);
+        if (!id) return null;
+
+        // Forge quirk: "Status" column shows handler; real status under "Resolution"
+        let status = col(cells, 'Status');
+        if (!STATUS_RE.test(status)) {
+          const resolution = col(cells, 'Resolution');
+          if (STATUS_RE.test(resolution)) status = resolution;
+        }
+
+        return {
+          id,
+          summary: link?.getAttribute('title')?.trim() || col(cells, 'Summary'),
+          status,
+          priority: col(cells, 'Priority'),
+          severity: col(cells, 'Severity') || col(cells, 'S'),
+          keywords: col(cells, 'Keyword') || col(cells, 'Category'),
+          reporter: col(cells, 'Reporter'),
+          assignee: (col(cells, 'Status') || col(cells, 'Handler') || col(cells, 'Assigned To'))
+            .replace(/^\(|\)$/g, '')
+            .trim(),
+          source: col(cells, 'Source'),
+          product_version: col(cells, 'Reported Version') || col(cells, 'Product Version'),
+          fix_schedule: col(cells, 'Fix Schedule'),
+          last_updated: col(cells, 'Updated') || col(cells, 'Last Updated'),
+          created_at: col(cells, 'Date Submitted') || col(cells, 'Date'),
+          url: link?.href || '',
+        };
+      }).filter(Boolean);
+
+      const key = (args.status || 'all').toLowerCase();
+      const filter = FILTERS[key] || FILTERS.all;
+      const filtered = all.filter(b => filter.test(b.status));
+
+      return {
+        bugs: filtered.slice(0, args.limit || 50),
+        total: filtered.length,
+        rawCount: all.length,
+        _page: location.href,
+        _columnsDetected: Object.keys(headerIdx),
+      };
+
+  get_bug:
+    description: |
+      Get full details of a single bug — all fields, notes (comments),
+      and history. Returns a structured object with summary, description,
+      status, resolution, priority, severity, reporter, assignee, notes,
+      history, and the raw field map.
+    parameters:
+      bug_id:
+        type: number
+        label: Bug ID
+        required: true
+    returns: "{ id, summary, description, status, resolution, ..., notes: [{id, idx, author, date, body}, ...], history: [...] }"
+    page:
+      url: "{base_url}/bug_view_page.php?bug_id={args.bug_id}"
+      on_target: "bug_id={args.bug_id}"
+    script: |
+      const detailsTitle = Array.from(document.querySelectorAll('.form-title'))
+        .find(e => e.textContent && e.textContent.trim().startsWith('Viewing Bug'));
+      const detailsTable = detailsTitle ? detailsTitle.closest('table') : null;
+      if (!detailsTable) {
+        return { _error: 'bug detail table not found on ' + location.pathname };
+      }
+
+      // Top header row pattern (row 1 = labels, row 2 = values)
+      const rows = Array.from(detailsTable.querySelectorAll('tr'));
+      const fields = {};
+      if (rows[1] && rows[2]) {
+        const labelCells = Array.from(rows[1].querySelectorAll('td'));
+        const valueCells = Array.from(rows[2].querySelectorAll('td'));
+        labelCells.forEach((l, i) => {
+          const label = l.innerText.trim();
+          const val = valueCells[i] ? valueCells[i].innerText.trim() : '';
+          if (label && !fields[label]) fields[label] = val;
+        });
+      }
+
+      // Walk td.category labels (the rest of the fields)
+      Array.from(document.querySelectorAll('td.category')).forEach(label => {
+        const labelText = label.textContent?.trim() || '';
+        if (labelText.includes('\n') && labelText.length > 100) return;
+        if (labelText.startsWith('Select File') || labelText === 'Bugnote') return;
+        const v = label.nextElementSibling;
+        if (!v || v.tagName !== 'TD' || v.classList.contains('category')) return;
+        if (!fields[labelText]) fields[labelText] = v.innerText.trim();
+      });
+
+      // Bug notes
+      const notesTitle = Array.from(document.querySelectorAll('.form-title'))
+        .find(e => e.textContent && e.textContent.trim().startsWith('Bug Notes'));
+      const notesTable = notesTitle?.closest('table');
+      // Stable note key for Jobs dedup. Different Mantis themes put the
+      // note id in different places — try several before falling back to
+      // a content hash so `id` is NEVER null.
+      function pickNoteId(row) {
+        // 1. <tr id="c12345">
+        const rowId = row.getAttribute('id') || '';
+        let m = rowId.match(/^c(\d+)$/);
+        if (m) return Number(m[1]);
+        // 2. <a id="c12345"> / <a name="c12345"> inside the row (most themes)
+        const anchor = row.querySelector('[id^="c"], [name^="c"]');
+        const aId = anchor?.getAttribute('id') || anchor?.getAttribute('name') || '';
+        m = aId.match(/^c(\d+)$/);
+        if (m) return Number(m[1]);
+        // 3. <a href="...#c12345"> — present in some custom skins
+        const hashLink = row.querySelector('a[href*="#c"]');
+        m = hashLink?.getAttribute('href')?.match(/#c(\d+)/);
+        if (m) return Number(m[1]);
+        // 4. bug_revision_view_page.php?bugnote_id=12345 — Mantis core links to it
+        const editLink = row.querySelector('a[href*="bugnote_id="]');
+        m = editLink?.getAttribute('href')?.match(/bugnote_id=(\d+)/);
+        if (m) return Number(m[1]);
+        return null;
+      }
+
+      // Synthetic stable key when no native id is found. SubtleCrypto would
+      // be cleaner but isn't always allowed in MAIN world; a cheap FNV-1a
+      // 32-bit hash is plenty to distinguish notes from each other.
+      function fnv1a(s) {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+        }
+        return h.toString(16);
+      }
+
+      const notes = Array.from(notesTable?.querySelectorAll('tr.bugnote') || []).map((r, i) => {
+        const cells = r.querySelectorAll('td');
+        const header = cells[0]?.innerText.trim() || '';
+        const body = cells[1]?.innerText.trim() || '';
+        const m = header.match(/^(.*?)\n(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+        const author = m && m[1] ? m[1].trim() : (header.split('\n')[0] || '').trim();
+        const date = m && m[2] ? m[2] : '';
+
+        const nativeId = pickNoteId(r);
+        // `id` is what Jobs dedups on — always populate it. Native numeric id
+        // when available; else synthetic 'note-<hash>' from date + first 200
+        // body chars (stable across reloads even if the note isn't edited).
+        const id = nativeId != null
+          ? nativeId
+          : `note-${fnv1a(date + '' + body.slice(0, 200))}`;
+        return {
+          id,
+          idx: i,
+          author,
+          date,
+          body,
+          // Surface which mechanism gave us the id for easier debugging
+          _id_source: nativeId != null ? 'native' : 'hash(date+body)',
+        };
+      });
+
+      // Bug history (4-column table)
+      const historyTitle = Array.from(document.querySelectorAll('.form-title'))
+        .find(e => e.textContent && e.textContent.trim().startsWith('Bug History'));
+      const historyTable = historyTitle?.closest('table');
+      const history = Array.from(historyTable?.querySelectorAll('tr') || [])
+        .filter(r => r.querySelectorAll('td').length === 4)
+        .slice(1)
+        .map(r => {
+          const c = Array.from(r.querySelectorAll('td')).map(x => x.innerText.trim());
+          return { date: c[0], user: c[1], field: c[2], change: c[3] };
+        });
+
+      const id = Number(fields.ID || args.bug_id);
+
+      return {
+        id,
+        summary: fields.Summary || '',
+        description: fields.Description || '',
+        additional_information: fields['Additional Information'] || '',
+        status: fields.Status || '',
+        resolution: fields.Resolution || '',
+        priority: fields.Priority || '',
+        severity: fields.Severity || '',
+        reproducibility: fields.Reproducibility || '',
+        category: fields.Category || '',
+        keywords: fields.Keyword || '',
+        reporter: fields.Reporter || '',
+        assignee: fields['Assigned To'] || '',
+        qa_assignee: fields['QA Assignee'] || '',
+        view_status: fields['View Status'] || '',
+        eta: fields.ETA || '',
+        date_submitted: fields['Date Submitted'] || '',
+        last_update: fields['Last Update'] || '',
+        reported_version: fields['Reported Version'] || '',
+        fix_schedule: fields['Fix Schedule'] || '',
+        source: fields.Source || '',
+        tag: fields.Tag || '',
+        notes,
+        history,
+        url: location.href,
+        _fields_raw: fields,
+      };
+
+  search_bugs:
+    description: |
+      Search bugs with optional status / project / fix-schedule filters.
+
+      `query` is free-text on summary + description ONLY. DO NOT pass
+      pseudo-syntax like `status:assigned` / `project:Foo` / a version
+      number inside the query — those become literal search terms and
+      match nothing.
+
+      Use these dedicated params instead:
+        - status         — by Mantis status (open / new / assigned / ...)
+        - project_id     — by Mantis project (numeric id from list_projects)
+        - fix_schedule   — Fix Schedule text — uses Mantis search_fixforecast
+                           URL param (server-side; fast). Example "7.6.7".
+        - assignee       — Username (e.g. "jdoe"), full name, or numeric user
+                           id. Resolves to handler_id URL param. Falls back
+                           to client-side substring match on the Assigned To
+                           column if the user can't be looked up.
+        - reporter       — Same matching as assignee. Becomes reporter_id.
+        - qa_assignee    — Same matching as assignee. Becomes qa_assignee_id.
+                           (Some Mantis installs expose QA as a first-class
+                           field, not a custom field — this is one of them.)
+        - extra_params   — Object of { name: value } passed verbatim to
+                           Mantis filter URL. Use for fields we don't
+                           model directly: bug_type, dev_status,
+                           review_required, escalated_by, eco_checked_in,
+                           feedback_requested, bug_type, search_type,
+                           multicheckbox_tags[], etc. Discover them on
+                           your Mantis filter page (DevTools → form fields).
+    parameters:
+      query:
+        type: string
+        label: Search query (free text, matches summary + description)
+        required: false
+      status:
+        type: string
+        label: |
+          Status filter. Accepts a single name or comma list:
+            new, feedback, acknowledged, confirmed, assigned,
+            resolved, closed, reopened.
+          Aliases:
+            "open" → new,feedback,acknowledged,confirmed,assigned (everything <80)
+            "all"  → no filter
+        default: "open"
+      project_id:
+        type: number
+        label: "Mantis project id (numeric — get from list_projects). Omit = all projects user can see."
+        required: false
+      fix_schedule:
+        type: string
+        label: |
+          Fix Schedule custom field (e.g. "7.6.7"). Case-insensitive
+          substring match. Walks Mantis pagination until `limit` matches
+          found or the scan cap is reached.
+        required: false
+      assignee:
+        type: string
+        label: |
+          Assignee — accepts username ("jdoe"), full name ("Jane Doe"),
+          or numeric user id ("8806"). Looked up via the filter form's
+          handler_id dropdown that Mantis already serves on view_all_bug_page.
+          Resolves to URL param handler_id=<id> (server-side filter, fast).
+          Falls back to client-side substring match on the Assigned To
+          column if lookup fails.
+        required: false
+      reporter:
+        type: string
+        label: |
+          Reporter — same matching as assignee. Resolves to reporter_id.
+        required: false
+      qa_assignee:
+        type: string
+        label: |
+          QA Assignee — same matching as assignee. Resolves to
+          qa_assignee_id (treated as a first-class field on customized
+          Mantis installs that expose it directly rather than as a
+          custom field).
+        required: false
+      extra_params:
+        type: object
+        label: |
+          Raw Mantis filter URL params. Useful for install-specific custom
+          fields we don't model directly. Examples (your install may have
+          others — inspect the filter form in DevTools to find names):
+            bug_type            (Regression / Suggestion / ...)
+            dev_status          (discuss / pending / fixme-hi / ...)
+            review_required     (any / v1-v5)
+            feedback_requested  (Yes / No / any)
+            eco_checked_in      (Yes / No)
+            escalated_by        (numeric user id)
+            search_type         (1=AND, 2=OR)
+            multicheckbox_tags[] (tag id)
+            submit_starttime, submit_endtime
+            start_reported_version, end_reported_version
+            css_tickets_cnt, etc.
+          Pass as { "bug_type": "Regression", "dev_status": "pending" }.
+        required: false
+      limit:
+        type: number
+        default: 25
+    returns: "{ bugs: [{id, summary, status, priority, severity, reporter, assignee, qa_assignee, fix_schedule, …}], total (returned), total_matching (server-side total across all pages, from 'Viewing Bugs (a - b / N)'), rawCount, scanned, pages_walked, query, status, project_id, fix_schedule, assignee, reporter, qa_assignee, _filter_url, _page }"
+    page:
+      url: "{base_url}/view_all_bug_page.php"
+      on_target: "/view_all_bug_page.php"
+    script: |
+      // Status enum probed live from a customized Mantis filter form.
+      // Note: 'reopened' (70) is NOT in every install — the probed one
+      // dropped it. If your Mantis is standard MantisBT (with reopened),
+      // add 70 here.
+      const STATUS_IDS = {
+        new: 10, feedback: 20, acknowledged: 30, confirmed: 40,
+        assigned: 50, resolved: 80, closed: 90,
+      };
+      const OPEN_GROUP = ['new','feedback','acknowledged','confirmed','assigned'];
+
+      function resolveStatuses(raw) {
+        const v = String(raw || 'open').toLowerCase().trim();
+        if (v === 'all' || v === '') return [];
+        if (v === 'open') return OPEN_GROUP.map(n => STATUS_IDS[n]);
+        const names = v.split(',').map(s => s.trim()).filter(Boolean);
+        return names
+          .map(n => STATUS_IDS[n])
+          .filter(id => id != null);
+      }
+
+      const statusIds = resolveStatuses(args.status);
+      const limit = Number(args.limit) || 25;
+
+      // ─── User resolution (username / full name / numeric id → user_id) ─
+      // The filter form on view_all_bug_page.php already has loaded select
+      // elements for reporter_id / handler_id / qa_assignee_id with EVERY
+      // Mantis user. We mine that DOM rather than making a separate lookup
+      // call — zero extra HTTP, instant.
+      //
+      // Match priority for each input string:
+      //   1. Numeric input → use as-is (skip lookup)
+      //   2. Exact "(username)" at end of any option's label
+      //   3. Case-insensitive substring on full label ("liz zhang")
+      // Returns the first match's value. Null if nothing matches; caller
+      // falls back to client-side substring filtering on the result rows.
+      function resolveUserId(value) {
+        const v = String(value || '').trim();
+        if (!v) return null;
+        if (/^\d+$/.test(v)) return v;
+        const lv = v.toLowerCase();
+        const sels = document.querySelectorAll('select[name="handler_id"], select[name="reporter_id"], select[name="qa_assignee_id"]');
+        let fallbackSubstring = null;
+        for (const sel of sels) {
+          for (const opt of sel.options) {
+            const id = opt.value;
+            if (!/^\d+$/.test(id)) continue;
+            const label = (opt.textContent || '').toLowerCase().trim();
+            const m = label.match(/\(([a-z0-9_.-]+)\)\s*$/);
+            if (m && m[1] === lv) return id;
+            if (!fallbackSubstring && label.includes(lv)) fallbackSubstring = id;
+          }
+        }
+        return fallbackSubstring; // may be null
+      }
+
+      const handlerId = resolveUserId(args.assignee);
+      const reporterId = resolveUserId(args.reporter);
+      const qaAssigneeId = resolveUserId(args.qa_assignee);
+
+      // Fix Schedule is now a server-side URL param (search_fixforecast),
+      // not client-side substring. The client-side path is still kept as
+      // a safety net only for the rare case the server-side param fails.
+      const fixForecast = String(args.fix_schedule || '').trim();
+      const fixNeedle = fixForecast.toLowerCase();
+
+      // Multi-value client-side fallbacks for assignee/reporter/qa when user
+      // lookup didn't resolve to an id. The unresolved input becomes the
+      // substring needle.
+      const splitNeedles = (raw) => String(raw || '')
+        .toLowerCase()
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+      const assigneeNeedles = handlerId    ? [] : splitNeedles(args.assignee);
+      const reporterNeedles = reporterId   ? [] : splitNeedles(args.reporter);
+      const qaNeedles       = qaAssigneeId ? [] : splitNeedles(args.qa_assignee);
+      const hasClientFilter = assigneeNeedles.length > 0
+        || reporterNeedles.length > 0
+        || qaNeedles.length > 0;
+      // Client fallback active → scan more pages.
+      const PAGE_SIZE = hasClientFilter ? 200 : 100;
+      const MAX_PAGES = hasClientFilter ? 10 : 2;
+
+      // ─── Build & submit filter via the page's REAL form ──────────────
+      // Some customized Mantis installs ignore URL params like \`status_id[]\`
+      // entirely; they expect you to POST the *whole* filter form to view_all_set.php
+      // with multicheckbox[] entries appearing in the SAME order as the
+      // preceding show_<group>=y hidden markers (severity → status →
+      // priority → resolution). Probed live via chrome MCP, May 2026.
+      //
+      // Strategy: take the form currently rendered on the page,
+      // FormData-ify it, then override only the fields we care about.
+      const baseDir = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}`;
+      const filterForm = Array.from(document.querySelectorAll('form'))
+        .find(f => /view_all_set\.php/i.test(f.action || ''));
+      let filterUrl = baseDir + 'view_all_set.php';
+      let appliedVia = 'form';
+
+      if (!filterForm) {
+        appliedVia = 'fallback-url';
+        // Fallback only — Mantis without the form on the page won't honor
+        // our filters fully, but we at least try the documented params.
+        const params = new URLSearchParams();
+        params.set('type', '1');
+        params.set('temporary', 'y');
+        params.set('print', '0');
+        params.set('search', String(args.query || ''));
+        params.set('per_page', String(PAGE_SIZE));
+        if (args.project_id)  params.set('project_id', String(args.project_id));
+        if (handlerId)        params.set('handler_id', handlerId);
+        if (reporterId)       params.set('reporter_id', reporterId);
+        if (qaAssigneeId)     params.set('qa_assignee_id', qaAssigneeId);
+        if (fixForecast)      params.set('search_fixforecast', fixForecast);
+        for (const id of statusIds) params.append('status_id[]', String(id));
+        filterUrl = baseDir + 'view_all_set.php?' + params.toString();
+        const r = await fetch(filterUrl, { credentials: 'include' }).catch(e => ({_err: e.message}));
+        if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
+      } else {
+        // Mantis renders multiple <select name="multicheckbox[]"> elements
+        // — one per group (severity / status / priority / resolution / …).
+        // Each is given a distinguishing \`id\` like multi_status. Earlier
+        // attempts to align them by DOM-order positional matching with
+        // show_X hidden fields were brittle. Set selections DIRECTLY on
+        // each select by id, then let the browser's native FormData
+        // serialize the form — Mantis sees exactly what it would if a
+        // human had clicked the options.
+        function setSelect(id, values) {
+          const sel = filterForm.querySelector('#' + id);
+          if (!sel) return false;
+          for (const opt of sel.options) {
+            opt.selected = values.includes(String(opt.value));
+          }
+          return true;
+        }
+        function setInput(name, value) {
+          const el = filterForm.querySelector('[name="' + name + '"]');
+          if (!el) return false;
+          if (el.tagName === 'SELECT') {
+            for (const opt of el.options) opt.selected = (String(opt.value) === String(value));
+          } else {
+            el.value = String(value);
+          }
+          return true;
+        }
+
+        // ── CRITICAL: reset every filter we manage to its default first.
+        //
+        // Mantis stores the filter in the user's PHP session. If a previous
+        // Job set handler_id=8806 ("zliu") and this Job's search doesn't
+        // mention assignee, Mantis will STILL filter by handler_id=8806 —
+        // leaking state across jobs that share a browser session. This
+        // produced the exact "I configured fix_schedule=7.6.7 and got
+        // results pre-filtered to my user" symptom.
+        //
+        // Resetting before applying means each Job's source_input is the
+        // ENTIRE filter spec: anything you don't list is "any". Same
+        // contract the user expects from a stateless tool.
+        setInput('handler_id',      'any');
+        setInput('reporter_id',     'any');
+        setInput('qa_assignee_id',  'any');
+        setInput('show_status',     '');
+        setInput('show_severity',   '');
+        setInput('show_priority',   '');
+        setInput('show_resolution', '');
+        setInput('search',          '');
+        setInput('search_fixforecast', '');
+        // Clear every visible multi_* select too, for cosmetics + safety in
+        // case some Mantis version DOES read multicheckbox[].
+        for (const id of ['multi_status', 'multi_severity', 'multi_priority', 'multi_resolution']) {
+          const sel = filterForm.querySelector('#' + id);
+          if (sel) for (const o of sel.options) o.selected = false;
+        }
+
+        // 1. Status — some customized Mantis installs store the active
+        //    filter in the \`show_status\` HIDDEN field (comma-separated
+        //    ids), NOT in the multi_status <select>. Probed empirically:
+        //    clicking "Apply Filter" in the UI sends e.g. show_status=10,20,50.
+        //    The visible multi_status select is just UI state that Mantis
+        //    ignores on submit. Setting show_status directly is the only
+        //    thing that actually filters.
+        //
+        //    Pass empty string (or unset) to mean "no status filter (any)".
+        if (statusIds.length > 0) {
+          setInput('show_status', statusIds.join(','));
+          // Also sync the visible select so the UI is consistent if the
+          // user has the page open (cosmetic; not what drives the filter).
+          setSelect('multi_status', statusIds.map(String));
+        }
+        // 2. Free-text + per_page + project
+        setInput('search', String(args.query || ''));
+        setInput('per_page', String(PAGE_SIZE));
+        if (args.project_id) setInput('project_id', String(args.project_id));
+        // 3. Users
+        if (handlerId)     setInput('handler_id', handlerId);
+        if (reporterId)    setInput('reporter_id', reporterId);
+        if (qaAssigneeId)  setInput('qa_assignee_id', qaAssigneeId);
+        // 4. Fix Schedule — custom text input (some installs name it
+        //    search_fixforecast). Maps to the fix_schedule arg.
+        if (fixForecast)   setInput('search_fixforecast', fixForecast);
+
+        // FormData reads the LIVE state of the form — including all the
+        // selectedOptions / values we just set above. Hidden fields,
+        // show_status markers and the other multicheckbox[] groups all
+        // survive untouched.
+        const fd = new FormData(filterForm);
+
+        // 5. extra_params override — last so it can fix anything our
+        //    direct manipulation missed.
+        const extra = args.extra_params || {};
+        for (const [k, v] of Object.entries(extra)) {
+          if (v == null || v === '') continue;
+          fd.delete(k); fd.delete(k.endsWith('[]') ? k.slice(0,-2) : k + '[]');
+          const key = Array.isArray(v) && !k.endsWith('[]') ? k + '[]' : k;
+          if (Array.isArray(v)) v.forEach(x => fd.append(key, String(x)));
+          else fd.set(k, String(v));
+        }
+
+        // 6. POST → Mantis stores filter in session → we fetch the list.
+        const body = new URLSearchParams();
+        for (const [k, v] of fd.entries()) body.append(k, typeof v === 'string' ? v : '');
+        filterUrl = filterForm.action;
+        const r = await fetch(filterUrl, {
+          method: 'POST',
+          credentials: 'include',
+          redirect: 'follow',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        }).catch(e => ({ _err: e.message }));
+        if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
+      }
+
+      const STATUS_RE = /^(new|feedback|acknowledged|confirmed|assigned|open|resolved|closed|reopened)$/i;
+      const matched = [];
+      let scanned = 0, pagesWalked = 0, lastUrl = '';
+      // Hoisted so the return block (after the loop) can echo the actual
+      // column names back for debugging missed filters.
+      let lastHeaderIdx = {};
+      // Total matching the filter (NOT slice-limited by \`limit\`). Mantis
+      // Classic renders \`Viewing Bugs (1 - 50 / 151)\` above the bug list;
+      // 151 is what callers actually want to know how many bugs are out
+      // there. Parsed from the first page only — total is constant across
+      // pages.
+      let serverTotal = null;
+
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const listUrl = `${baseDir}view_all_bug_page.php?page_number=${page}`;
+        lastUrl = listUrl;
+        const html = await fetch(listUrl, { credentials: 'include' }).then(r => r.text())
+          .catch(e => `__FETCH_ERR__:${e.message}`);
+        if (html.startsWith('__FETCH_ERR__:')) {
+          return { bugs: matched, total: matched.length, _error: html.slice('__FETCH_ERR__:'.length), _filter_url: filterUrl, _page: listUrl, scanned, pages_walked: pagesWalked };
+        }
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const list = doc.querySelector('#bug_list');
+        if (!list) {
+          return { bugs: matched, total: matched.length, _error: '#bug_list not found', _filter_url: filterUrl, _page: listUrl, scanned, pages_walked: pagesWalked };
+        }
+        const allRows = Array.from(list.querySelectorAll('tr'));
+        const headerRow = allRows.find(r => r.className === 'row-category');
+        const dataRows = allRows.filter(r => r.querySelector('input[name*="bug"]'));
+        if (dataRows.length === 0) break;        // out of rows
+        pagesWalked++;
+
+        // Parse Mantis pagination header: "Viewing Bugs (1 - 50 / 151)".
+        // First page only — total is constant across pages. YAML `|` block
+        // passes backslashes through verbatim, so regex shorthands use a
+        // SINGLE backslash (matches the rest of the file's regex style).
+        if (serverTotal === null) {
+          const docText = (doc.body?.textContent || '');
+          const m = docText.match(/Viewing\s+(?:Bugs|Issues)\s*\(\s*\d+\s*-\s*\d+\s*\/\s*(\d+)\s*\)/i);
+          if (m) serverTotal = Number(m[1]);
+        }
+
+        const headerIdx = {};
+        if (headerRow) {
+          Array.from(headerRow.querySelectorAll('td, th')).forEach((c, i) => {
+            const name = (c.textContent || '').trim().toLowerCase();
+            if (name) headerIdx[name] = i;
+          });
+        }
+        lastHeaderIdx = headerIdx;
+        const col = (cells, header) => {
+          const idx = headerIdx[header.toLowerCase()];
+          if (idx === undefined) return '';
+          return (cells[idx]?.textContent || '').replace(/\s+/g, ' ').trim();
+        };
+        // Fuzzy column lookup — tries any header containing one of the
+        // probe words. Survives Mantis themes that rename "Handler" to
+        // "Assigned", or include a sort indicator like "Assigned ↑" in the
+        // header text. First matching header wins.
+        const colMatch = (cells, ...probes) => {
+          const lower = probes.map(s => s.toLowerCase());
+          for (const [hdr, idx] of Object.entries(headerIdx)) {
+            if (lower.some(p => hdr.includes(p))) {
+              return (cells[idx]?.textContent || '').replace(/\s+/g, ' ').trim();
+            }
+          }
+          return '';
+        };
+
+        for (const r of dataRows) {
+          scanned++;
+          const cells = Array.from(r.querySelectorAll('td'));
+          const checkbox = r.querySelector('input[type="checkbox"][name*="bug"]');
+          const link = r.querySelector('a[href*="bug_view_page.php?bug_id="]');
+          const id = checkbox?.value
+            ? Number(checkbox.value)
+            : Number(link?.getAttribute('href')?.match(/bug_id=(\d+)/)?.[1] || 0);
+          if (!id) continue;
+          let status = col(cells, 'Status');
+          if (!STATUS_RE.test(status)) {
+            const resolution = col(cells, 'Resolution');
+            if (STATUS_RE.test(resolution)) status = resolution;
+          }
+          const fixSchedule = col(cells, 'Fix Schedule');
+          // Per-row filters — all client-side substring on column text.
+          if (fixNeedle && !fixSchedule.toLowerCase().includes(fixNeedle)) continue;
+
+          // colMatch picks the FIRST header that contains any probe word —
+          // survives renames ("Handler" → "Assigned"), sort indicators
+          // ("Assigned ↑"), trailing whitespace, etc.
+          const assigneeText = colMatch(cells, 'handler', 'assigned', 'assignee')
+            .replace(/^\(|\)$/g, '').trim();
+          if (assigneeNeedles.length > 0) {
+            const hay = assigneeText.toLowerCase();
+            if (!assigneeNeedles.some(n => hay.includes(n))) continue;
+          }
+
+          const reporterText = colMatch(cells, 'reporter');
+          if (reporterNeedles.length > 0) {
+            const hay = reporterText.toLowerCase();
+            if (!reporterNeedles.some(n => hay.includes(n))) continue;
+          }
+
+          // QA Assignee is a custom column — only present if the user's
+          // View Issues page has it configured. If no header matches and the
+          // user asked to filter by it, we bail on the bug (can't verify)
+          // rather than letting it slip through unfiltered.
+          const qaText = colMatch(cells, 'qa assignee', 'qa-assignee', 'qa_assignee');
+          if (qaNeedles.length > 0) {
+            if (!qaText && !Object.keys(headerIdx).some(h => h.includes('qa'))) continue;
+            const hay = qaText.toLowerCase();
+            if (!qaNeedles.some(n => hay.includes(n))) continue;
+          }
+
+          matched.push({
+            id,
+            summary: link?.getAttribute('title')?.trim() || col(cells, 'Summary'),
+            status,
+            priority: col(cells, 'Priority'),
+            severity: col(cells, 'Severity') || col(cells, 'S'),
+            keywords: col(cells, 'Keyword') || col(cells, 'Category'),
+            reporter: reporterText,
+            assignee: assigneeText,
+            qa_assignee: qaText,
+            fix_schedule: fixSchedule,
+            product_version: col(cells, 'Reported Version') || col(cells, 'Product Version'),
+            last_updated: col(cells, 'Updated') || col(cells, 'Last Updated'),
+            url: link?.getAttribute('href') ? new URL(link.getAttribute('href'), location.origin).toString() : '',
+          });
+
+          if (matched.length >= limit) break;
+        }
+        if (matched.length >= limit) break;
+        if (dataRows.length < PAGE_SIZE) break;  // last page (short)
+      }
+
+      return {
+        bugs: matched,
+        // total returned (post-limit) — what the caller iterates over.
+        total: matched.length,
+        // total_matching — how many bugs Mantis says match the filter
+        // across ALL pages (parsed from "Viewing Bugs (1 - 50 / 151)").
+        // null if the parser couldn't find that header (theme variation).
+        total_matching: serverTotal,
+        rawCount: scanned,
+        scanned,
+        pages_walked: pagesWalked,
+        query: args.query || '',
+        status: args.status || 'open',
+        project_id: args.project_id || null,
+        fix_schedule: args.fix_schedule || '',
+        assignee: args.assignee || '',
+        reporter: args.reporter || '',
+        qa_assignee: args.qa_assignee || '',
+        // Echo back what resolved to user IDs vs fell through to client
+        // substring. If a value was passed but neither resolved nor matched
+        // anything, you'll see resolved_*=null AND zero results.
+        resolved_handler_id: handlerId,
+        resolved_reporter_id: reporterId,
+        resolved_qa_assignee_id: qaAssigneeId,
+        // Actual column headers Mantis emitted on the list page — useful
+        // when the client-side fallback doesn't catch anything.
+        _columns: Object.keys(lastHeaderIdx),
+        _applied_via: appliedVia,
+        _filter_url: filterUrl,
+        _page: lastUrl,
+      };
+
+  list_projects:
+    description: |
+      List projects the current user can see. Pulled from the project_id
+      <select> on the bug list page — manage_proj_page.php is admin-only.
+    returns: "{ projects: [...], total }"
+    page:
+      url: "{base_url}/view_all_bug_page.php"
+      on_target: "/view_all_bug_page.php"
+    script: |
+      const sel = document.querySelector('select[name="project_id"]');
+      if (!sel) return { _error: 'project_id select not found on page' };
+      const projects = Array.from(sel.options)
+        .map(o => ({
+          id: Number(o.value),
+          name: (o.text || '').trim(),
+          depth: ((o.text || '').match(/^[\s ]+/)?.[0]?.length) || 0,
+        }))
+        .filter(p => p.id > 0);
+      return { projects, total: projects.length };
+
+  list_attachments:
+    description: |
+      List the Attached Files on a single bug. Returns file_id, filename,
+      size, uploaded_at + the canonical download URL.
+
+      Implementation: scrape file_download.php?file_id=N&type=bug links
+      from bug_view_page.php. Each file appears twice (icon-link + name-
+      link); dedup by file_id. Filename / size / date are parsed from
+      the row text "<filename> (<N> bytes) <YYYY-MM-DD HH:MM>".
+    parameters:
+      bug_id:
+        type: number
+        label: Bug ID
+        required: true
+    returns: "{ attachments: [{ file_id, filename, size, uploaded_at, download_url }], total }"
+    page:
+      url: "{base_url}/bug_view_page.php?bug_id={args.bug_id}"
+      on_target: "bug_id={args.bug_id}"
+    script: |
+      const out = { attachments: [], total: 0 };
+      const seen = new Set();
+      const anchors = Array.from(document.querySelectorAll('a[href*="file_download.php?file_id="]'));
+      for (const a of anchors) {
+        const m = a.href.match(/file_id=(\d+)/);
+        if (!m) continue;
+        const fileId = Number(m[1]);
+        if (seen.has(fileId)) continue;
+        seen.add(fileId);
+
+        // The filename text is on the OTHER anchor for the same id
+        // (icon-link is empty). Find a sibling anchor that has text.
+        let filename = (a.textContent || '').trim();
+        if (!filename) {
+          const sib = anchors.find(x => x !== a && x.href === a.href && (x.textContent || '').trim());
+          filename = (sib?.textContent || '').trim();
+        }
+        // Parent text holds "filename (NN bytes) DATE" for THIS file +
+        // possibly other files. Slice from filename onwards, parse first
+        // "(N bytes)" + "(YYYY-MM-DD HH:MM)" after it.
+        const parent = (a.closest('td, li, tr, p, div')?.textContent || '').replace(/\s+/g, ' ');
+        let size = 0, uploadedAt = '';
+        if (filename) {
+          const idx = parent.indexOf(filename);
+          const chunk = idx >= 0 ? parent.slice(idx + filename.length, idx + filename.length + 80) : parent;
+          const sm = chunk.match(/\(\s*([\d,]+)\s*bytes?\s*\)/i);
+          if (sm) size = Number(sm[1].replace(/,/g, ''));
+          const dm = chunk.match(/(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/);
+          if (dm) uploadedAt = dm[1];
+        }
+        out.attachments.push({
+          file_id: fileId,
+          filename,
+          size,
+          uploaded_at: uploadedAt,
+          download_url: a.href,
+        });
+      }
+      out.total = out.attachments.length;
+      return out;
+
+  download_attachment:
+    description: |
+      Download a single bug attachment as base64. Caller is responsible
+      for checking size first (via list_attachments) — \`max_size_bytes\`
+      hard-aborts before reading if the response Content-Length exceeds
+      it (default 5 MB), keeping the wire and base64 cost bounded.
+
+      Returns { filename, mime, size, content_b64 }. Pipelines write
+      content_b64 → \`base64 -d\` → a real file in .attachments/.
+    parameters:
+      file_id:
+        type: number
+        label: File ID (from list_attachments)
+        required: true
+      max_size_bytes:
+        type: number
+        label: "Max size — files larger than this are SKIPPED (returns { skipped: true, size })"
+        default: 5242880
+    returns: "{ filename, mime, size, content_b64, skipped? }"
+    page:
+      url: "{base_url}/bug_view_page.php"
+      on_target: "/bug_view_page.php"
+    script: |
+      // HEAD first to learn size + filename without buffering the body.
+      const url = `${location.origin}/file_download.php?file_id=${args.file_id}&type=bug`;
+      const headResp = await fetch(url, { method: 'HEAD', credentials: 'include' }).catch(e => ({ _err: e.message }));
+      if (headResp && headResp._err) return { _error: 'HEAD failed: ' + headResp._err };
+      if (!headResp.ok) return { _error: `HEAD HTTP ${headResp.status}` };
+      const cl = Number(headResp.headers.get('content-length') || 0);
+      const mime = headResp.headers.get('content-type') || 'application/octet-stream';
+      // Try to pull filename from Content-Disposition.
+      let filename = '';
+      const cd = headResp.headers.get('content-disposition') || '';
+      const fm = cd.match(/filename\*?=(?:UTF-8'')?"?([^"\;\n]+)"?/i);
+      if (fm) filename = decodeURIComponent(fm[1]);
+
+      const cap = Number(args.max_size_bytes) || 5242880;
+      if (cl > cap) {
+        return { filename, mime, size: cl, content_b64: '', skipped: true, reason: `size ${cl} > cap ${cap}` };
+      }
+      // GET full payload.
+      const buf = await fetch(url, { credentials: 'include' }).then(r => r.arrayBuffer());
+      // arraybuffer → base64. btoa wants binary string.
+      let bin = '';
+      const bytes = new Uint8Array(buf);
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      return { filename, mime, size: bytes.length, content_b64: btoa(bin) };
+
+  add_comment:
+    description: |
+      Add a note (comment) to a bug. Requires user confirmation in the
+      extension before sending. Mantis 1.x has no CSRF token on this
+      form — session cookie alone authorises.
+    destructive: true
+    parameters:
+      bug_id:
+        type: number
+        label: Bug ID
+        required: true
+      text:
+        type: string
+        label: Comment text
+        required: true
+    returns: "{ ok, status, finalUrl, success }"
+    page:
+      url: "{base_url}/bug_view_page.php?bug_id={args.bug_id}"
+      on_target: "bug_id={args.bug_id}"
+    script: |
+      const body = new URLSearchParams({
+        bug_id: String(args.bug_id),
+        bugnote_text: args.text,
+      });
+      try {
+        const r = await fetch('bugnote_add.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+          credentials: 'include',
+          redirect: 'follow',
+        });
+        return {
+          ok: r.ok,
+          status: r.status,
+          finalUrl: r.url,
+          success: r.ok && r.url.includes('bug_id=' + args.bug_id),
+        };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }

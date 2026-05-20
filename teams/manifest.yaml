@@ -1,0 +1,913 @@
+id: teams
+name: Microsoft Teams
+icon: "💬"
+version: "0.8.1"
+author: forge
+category: connector
+mode: browser-side
+runner: isolated
+description: |
+  Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
+  the runner's ISOLATED world — page CSP doesn't apply, but window
+  globals (MSAL token etc.) are NOT accessible. Pure DOM extraction.
+
+  Wait strategy:
+    - Runner checks chrome.tabs.query first and reuses any existing
+      Teams tab via host_match.
+    - Each script waits up to ~30s for Teams hydration before extracting,
+      so cold-load is handled.
+    - Switching chats/channels polls up to 30s for the new content to
+      render (Teams can be slow on enterprise networks).
+
+  Selectors verified on teams.microsoft.com/v2/ via chrome-devtools-mcp.
+  Microsoft rotates Fluent UI hooks — when extraction starts returning
+  empty, re-probe and bump this manifest.
+
+settings:
+  base_url:
+    type: string
+    label: Teams base URL
+    description: "Usually https://teams.microsoft.com"
+    default: "https://teams.microsoft.com"
+    required: true
+
+host_match: "{base_url}/*"
+login_redirect: "login.microsoftonline.com"
+
+tools:
+  list_chats:
+    description: |
+      List chats from the left rail, grouped by section (Favorites,
+      Chats, Meeting threads, Teams and channels). Returns whatever
+      Teams has rendered — virtualized for very long lists.
+    parameters:
+      sections:
+        type: string
+        label: Sections to include (comma-separated)
+        description: "Defaults to 'Favorites,Chats'. Use 'all' for everything."
+        default: "Favorites,Chats"
+      limit:
+        type: number
+        default: 100
+    returns: "{ sections: [{ name, items: [{ title }] }], total }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      // Wait for left rail tree to populate (handles cold Teams load)
+      const tStart = Date.now();
+      while (Date.now() - tStart < 30000) {
+        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      const sectionFilter = String(args.sections || 'Favorites,Chats').toLowerCase();
+      const wantAll = sectionFilter === 'all';
+      const wanted = new Set(sectionFilter.split(',').map(s => s.trim().toLowerCase()));
+
+      const level1 = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
+      const sections = level1.map(group => {
+        const firstLine = (group.innerText || '').split('\n')[0].trim();
+        const items = Array.from(group.querySelectorAll('[role="treeitem"][aria-level="2"]'))
+          .map(t => ({
+            title: (t.innerText || '').split('\n')[0].trim(),
+            data_tid: t.getAttribute('data-tid') || '',
+            id: t.id || '',
+          }))
+          .filter(it => it.title);
+        return { name: firstLine, items };
+      }).filter(s => wantAll || wanted.has(s.name.toLowerCase()));
+
+      const total = sections.reduce((n, s) => n + s.items.length, 0);
+      const limit = args.limit || 100;
+      let remaining = limit;
+      const sliced = sections.map(s => {
+        const take = Math.max(0, remaining);
+        const out = { name: s.name, items: s.items.slice(0, take) };
+        remaining -= out.items.length;
+        return out;
+      });
+
+      return {
+        sections: sliced,
+        total,
+        _virtualized: true,
+        _waited_ms: Date.now() - tStart,
+        _page: location.href,
+      };
+
+  list_messages_in_current_chat:
+    description: |
+      Extract messages from the currently-open chat (the one visible in
+      the main pane). Returns id, author, body, timestamp. The user
+      should open the target chat in Teams first.
+
+      Prefer `read_chat(name)` instead — it does the switching for you.
+    parameters:
+      limit:
+        type: number
+        label: Max messages (most recent)
+        default: 50
+    returns: "{ chat_title, messages: [...], total, _virtualized }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      // Wait up to 30s for chat content to render
+      const tStart = Date.now();
+      while (Date.now() - tStart < 30000) {
+        if (document.querySelectorAll('[data-tid="chat-pane-item"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      const items = Array.from(document.querySelectorAll('[data-tid="chat-pane-item"]'));
+      const messages = items.map(item => {
+        const msg = item.querySelector('[data-tid="chat-pane-message"]');
+        const mid = msg?.getAttribute('data-mid') || '';
+        const authorEl = item.querySelector('[data-tid="message-author-name"]');
+        const contentEl = mid ? document.getElementById('content-' + mid) : null;
+        const tsEl = mid ? document.getElementById('timestamp-' + mid) : null;
+        const subjectEl = mid ? document.getElementById('subject-line-' + mid) : null;
+        const reactionEls = item.querySelectorAll('[data-tid="diverse-reaction-pill-button"], [data-tid*="reaction-pill"]');
+        const reactions = Array.from(reactionEls).map(r => r.getAttribute('aria-label') || r.textContent.trim()).filter(Boolean);
+        return {
+          mid,
+          author: authorEl?.innerText.trim() || '',
+          body: contentEl?.innerText.trim() || msg?.innerText.trim() || '',
+          subject: subjectEl?.innerText.trim() || '',
+          timestamp: tsEl?.getAttribute('title') || tsEl?.innerText.trim() || '',
+          reactions,
+        };
+      }).filter(m => m.body || m.author);
+
+      const headerParticipant = document.querySelector('[data-tid^="participant-"]');
+      let chatTitle = '';
+      if (headerParticipant) {
+        const node = headerParticipant.closest('div[class*="container"], div[class*="header"]');
+        chatTitle = (node?.innerText || headerParticipant.innerText || '').split('\n')[0].trim();
+      }
+
+      const limit = args.limit || 50;
+      return {
+        chat_title: chatTitle,
+        messages: messages.slice(-limit),
+        total: messages.length,
+        _virtualized: true,
+        _waited_ms: Date.now() - tStart,
+        _page: location.href,
+      };
+
+  get_current_chat_info:
+    description: |
+      Identify the currently-open chat — title, participants if visible.
+      Useful as a quick "where am I" call before list_messages.
+    returns: "{ chat_title, participants, url }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const tStart = Date.now();
+      while (Date.now() - tStart < 30000) {
+        if (document.querySelector('[data-tid^="participant-"]')) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      const participantEls = Array.from(document.querySelectorAll('[data-tid^="participant-"]'));
+      const participants = participantEls.map(p => ({
+        name: (p.innerText || '').trim().split('\n')[0],
+        data_tid: p.getAttribute('data-tid') || '',
+      })).filter(p => p.name);
+
+      const seen = new Set();
+      const unique = participants.filter(p => {
+        if (seen.has(p.data_tid)) return false;
+        seen.add(p.data_tid);
+        return true;
+      });
+
+      const chatTitle = unique.map(p => p.name).join(', ');
+      return { chat_title: chatTitle, participants: unique, url: location.href };
+
+  read_chat:
+    description: |
+      Switch to a specific 1:1 or group chat by name (substring match,
+      case-insensitive) and extract its messages. Combines open + read
+      into one tool — no need to open the chat manually first.
+
+      Waits up to 30s for Teams to hydrate (handles cold load) and up
+      to 30s for the chat switch to complete.
+    parameters:
+      name:
+        type: string
+        label: Chat name (substring, case-insensitive — e.g. "Alice Wang", "Eng Leaders")
+        required: true
+      limit:
+        type: number
+        label: Max messages (most recent)
+        default: 50
+    returns: "{ ok, chat_title, messages: [...], total, switched_in_ms, waited_for_ready_ms }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const name = String(args.name || '').trim();
+      if (!name) return { ok: false, error: 'name parameter is required' };
+
+      // 1. Wait for Teams left rail to be ready (cold load handling)
+      const readyStart = Date.now();
+      while (Date.now() - readyStart < 30000) {
+        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      const waitedForReadyMs = Date.now() - readyStart;
+      if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length === 0) {
+        return { ok: false, error: 'Teams did not finish loading in 30s — try again or refresh the tab.' };
+      }
+
+      // 2. Find candidate treeitem in the left rail
+      const candidates = [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')];
+      const lower = name.toLowerCase();
+      const match = candidates.find(t => {
+        const first = (t.innerText || '').split('\n')[0].trim().toLowerCase();
+        return first.includes(lower);
+      });
+      if (!match) {
+        return {
+          ok: false,
+          error: `No chat in left rail matching "${name}". Either the chat is in "See more", or not in your visible list.`,
+          visible_chats: candidates.slice(0, 30).map(c => (c.innerText || '').split('\n')[0].trim()).filter(Boolean),
+        };
+      }
+
+      // 3. If already on this chat, skip the click+wait
+      const currentTitle = document.title;
+      const alreadyHere = currentTitle.toLowerCase().includes(lower);
+
+      let waitedMs = 0;
+      if (!alreadyHere) {
+        const oldMids = new Set(
+          [...document.querySelectorAll('[data-tid="chat-pane-message"]')]
+            .map(e => e.getAttribute('data-mid'))
+            .filter(Boolean)
+        );
+
+        match.click();
+
+        // Poll up to 30s for new mids to appear
+        let switched = false;
+        for (let i = 0; i < 150; i++) {
+          await new Promise(r => setTimeout(r, 200));
+          waitedMs += 200;
+          const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')]
+            .map(e => e.getAttribute('data-mid'))
+            .filter(Boolean);
+          if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
+        }
+        if (!switched) {
+          return { ok: false, error: 'Timed out waiting for chat to switch (30s).', target_name: name };
+        }
+      }
+
+      // 4. Extract messages
+      const items = [...document.querySelectorAll('[data-tid="chat-pane-item"]')];
+      const messages = items.map(item => {
+        const msg = item.querySelector('[data-tid="chat-pane-message"]');
+        const mid = msg?.getAttribute('data-mid') || '';
+        const authorEl = item.querySelector('[data-tid="message-author-name"]');
+        const contentEl = mid ? document.getElementById('content-' + mid) : null;
+        const tsEl = mid ? document.getElementById('timestamp-' + mid) : null;
+        const reactionEls = item.querySelectorAll('[data-tid="diverse-reaction-pill-button"], [data-tid*="reaction-pill"]');
+        const reactions = [...reactionEls].map(r => r.getAttribute('aria-label') || r.textContent.trim()).filter(Boolean);
+        return {
+          mid,
+          author: authorEl?.innerText.trim() || '',
+          body: contentEl?.innerText.trim() || msg?.innerText.trim() || '',
+          timestamp: tsEl?.getAttribute('title') || tsEl?.innerText.trim() || '',
+          reactions,
+        };
+      }).filter(m => m.body || m.author);
+
+      const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
+      const chatTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
+
+      const limit = args.limit || 50;
+      return {
+        ok: true,
+        chat_title: chatTitle,
+        matched_name: (match.innerText || '').split('\n')[0].trim(),
+        switched: !alreadyHere,
+        switched_in_ms: waitedMs,
+        waited_for_ready_ms: waitedForReadyMs,
+        messages: messages.slice(-limit),
+        total: messages.length,
+        _virtualized: true,
+        _page: location.href,
+      };
+
+  read_channel:
+    description: |
+      Switch to a specific channel by team name + channel name and
+      extract its top-level posts. The team must be expanded in the
+      left rail (collapsed teams have no channels in DOM).
+    parameters:
+      team:
+        type: string
+        label: Team name (substring, case-insensitive)
+        required: true
+      channel:
+        type: string
+        label: Channel name (substring, case-insensitive)
+        required: true
+      limit:
+        type: number
+        default: 20
+    returns: "{ ok, team, channel, posts: [...] }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const teamName = String(args.team || '').trim();
+      const channelName = String(args.channel || '').trim();
+      if (!teamName || !channelName) {
+        return { ok: false, error: 'team and channel parameters are required' };
+      }
+
+      // Wait for Teams to be ready
+      const readyStart = Date.now();
+      while (Date.now() - readyStart < 30000) {
+        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length === 0) {
+        return { ok: false, error: 'Teams did not finish loading in 30s.' };
+      }
+
+      const level1 = [...document.querySelectorAll('[role="treeitem"][aria-level="1"]')];
+      const tnc = level1.find(t => /teams\s*and\s*channels/i.test((t.innerText || '').split('\n')[0]));
+      if (!tnc) return { ok: false, error: 'Teams and channels section not found' };
+
+      const teams = [...tnc.querySelectorAll('[role="treeitem"][aria-level="2"]')];
+      const team = teams.find(t => (t.innerText || '').split('\n')[0].toLowerCase().includes(teamName.toLowerCase()));
+      if (!team) {
+        return {
+          ok: false,
+          error: `Team "${teamName}" not found`,
+          visible_teams: teams.map(t => (t.innerText || '').split('\n')[0].trim()),
+        };
+      }
+
+      const channels = [...team.querySelectorAll('[role="treeitem"][aria-level="3"]')];
+      if (channels.length === 0) {
+        return {
+          ok: false,
+          error: `Team "${teamName}" is collapsed — no channels in DOM. Expand it in Teams first.`,
+        };
+      }
+      const channel = channels.find(c => (c.innerText || '').split('\n')[0].toLowerCase().includes(channelName.toLowerCase()));
+      if (!channel) {
+        return {
+          ok: false,
+          error: `Channel "${channelName}" not found under team "${teamName}"`,
+          visible_channels: channels.map(c => (c.innerText || '').split('\n')[0].trim()),
+        };
+      }
+
+      const alreadyHere = document.title.toLowerCase().includes(channelName.toLowerCase());
+      let waitedMs = 0;
+      if (!alreadyHere) {
+        const oldKeys = new Set(
+          [...document.querySelectorAll('[data-tid="channel-pane-message"]')]
+            .map(e => e.id).filter(Boolean)
+        );
+        channel.click();
+        let switched = false;
+        for (let i = 0; i < 150; i++) {
+          await new Promise(r => setTimeout(r, 200));
+          waitedMs += 200;
+          const cur = [...document.querySelectorAll('[data-tid="channel-pane-message"]')]
+            .map(e => e.id).filter(Boolean);
+          if (cur.length > 0 && cur.some(k => !oldKeys.has(k))) { switched = true; break; }
+        }
+        if (!switched) {
+          return { ok: false, error: 'Timed out waiting for channel to load (30s).' };
+        }
+      }
+
+      const posts = [...document.querySelectorAll('[data-tid="channel-pane-message"]')];
+      const parsed = posts.map(post => {
+        const midMatch = (post.id || '').match(/reply-chain-summary-(\d+)/);
+        const mid = midMatch ? midMatch[1] : '';
+        const subject = post.querySelector('[data-tid="subject-line"]')?.textContent.trim() || '';
+        const subheader = post.querySelector('[data-tid="post-message-subheader"]')?.textContent.trim() || '';
+        const ts = post.querySelector('[data-tid="timestamp"]')?.textContent.trim() || '';
+        const allBodies = [...post.querySelectorAll('[data-tid="message-body"]')];
+        const bodyEl = allBodies.find(b => b.closest('[role="group"]')?.id === post.id) || allBodies[0];
+        const author = subheader.replace(new RegExp('\\s*' + ts.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '.*$'), '').replace(/(Edited|New).*$/, '').trim();
+        const replyContainers = [...post.querySelectorAll('[role="group"][id^="message-body-"]')].filter(r => !r.id.includes(mid));
+        const replies = replyContainers.map(r => {
+          const rMid = (r.id.match(/message-body-(\d+)/) || [])[1] || '';
+          return {
+            mid: rMid,
+            author: (rMid ? document.getElementById('author-' + rMid)?.textContent.trim() : '') || '',
+            body: (rMid ? document.getElementById('content-' + rMid)?.innerText.trim() : '') || r.querySelector('[data-tid="message-body"]')?.innerText.trim() || '',
+            timestamp: r.querySelector('[data-tid="timestamp"]')?.textContent.trim() || '',
+          };
+        });
+        return { mid, subject, author, timestamp: ts, body: (bodyEl?.innerText || '').trim(), replies };
+      });
+
+      const ordered = parsed.slice().reverse();
+      const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
+      const channelTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
+
+      return {
+        ok: true,
+        team: (team.innerText || '').split('\n')[0].trim(),
+        channel: channelTitle,
+        switched: !alreadyHere,
+        switched_in_ms: waitedMs,
+        posts: ordered.slice(0, args.limit || 20),
+        total: parsed.length,
+        _page: location.href,
+      };
+
+  list_teams_and_channels:
+    description: |
+      List joined Teams (organizations) and their visible channels from
+      the left rail. Channels under collapsed teams aren't in DOM —
+      expand the team in Teams to render them.
+    parameters:
+      limit:
+        type: number
+        default: 50
+    returns: "{ teams: [{ name, unread, channels: [{ name, unread }] }], total }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const tStart = Date.now();
+      while (Date.now() - tStart < 30000) {
+        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      const level1 = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
+      const tnc = level1.find(t => /teams\s*and\s*channels/i.test((t.innerText || '').split('\n')[0]));
+      if (!tnc) {
+        return { teams: [], total: 0, _error: 'Teams and channels section not found in left rail' };
+      }
+      const teamItems = Array.from(tnc.querySelectorAll('[role="treeitem"][aria-level="2"]'));
+      const teams = teamItems.map(team => {
+        const ariaLabel = team.getAttribute('aria-label') || '';
+        const visibleText = (team.innerText || '').split('\n')[0];
+        const label = ariaLabel || visibleText;
+        const unread = /\bUnread\b/.test(visibleText) || /\bUnread\b/.test(ariaLabel);
+        const name = label.replace(/^Unread\s+/, '').replace(/^Team\s+/, '').replace(/\s+Has context menu$/, '').trim();
+        const channelEls = Array.from(team.querySelectorAll('[role="treeitem"][aria-level="3"]'));
+        const channels = channelEls.map(c => {
+          const cAriaLabel = c.getAttribute('aria-label') || '';
+          const cVisible = (c.innerText || '').split('\n')[0];
+          const cLabel = cAriaLabel || cVisible;
+          const cUnread = /\bUnread\b/.test(cVisible) || /\bUnread\b/.test(cAriaLabel);
+          const cName = cLabel.replace(/^Unread\s+/, '').replace(/^Channel\s+/, '').replace(/\s+Channel at mention$/, '').replace(/\s+Has context menu$/, '').trim();
+          return { name: cName, unread: cUnread };
+        }).filter(c => c.name && c.name !== 'See all channels');
+        return { name, unread, channels, channels_visible: channels.length, channels_collapsed: channelEls.length === 0 };
+      }).filter(t => t.name && t.name !== 'See all your teams');
+      return {
+        teams: teams.slice(0, args.limit || 50),
+        total: teams.length,
+        _virtualized_channels: true,
+        _page: location.href,
+      };
+
+  list_channel_posts:
+    description: |
+      Read top-level posts from the currently-open channel. For each
+      post, returns subject, author, timestamp, body, visible inline
+      replies, and a hint about hidden reply count.
+
+      Prefer `read_channel(team, channel)` to do switch+read in one tool.
+    parameters:
+      limit:
+        type: number
+        default: 20
+    returns: "{ channel, posts: [...], total }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      // Wait up to 30s for channel content to render
+      const tStart = Date.now();
+      while (Date.now() - tStart < 30000) {
+        if (document.querySelectorAll('[data-tid="channel-pane-message"]').length > 0) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      const posts = Array.from(document.querySelectorAll('[data-tid="channel-pane-message"]'));
+      const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
+      const channelName = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
+
+      const parsed = posts.map(post => {
+        const midMatch = (post.id || '').match(/reply-chain-summary-(\d+)/);
+        const mid = midMatch ? midMatch[1] : '';
+        const subjectEl = post.querySelector('[data-tid="subject-line"]');
+        const subheaderEl = post.querySelector('[data-tid="post-message-subheader"]');
+        const tsEl = post.querySelector('[data-tid="timestamp"]');
+        const allBodies = Array.from(post.querySelectorAll('[data-tid="message-body"]'));
+        const postBody = allBodies.find(b => {
+          const closest = b.closest('[role="group"]');
+          return closest === null || closest.id === post.id;
+        }) || allBodies[0];
+        const subheaderText = subheaderEl?.textContent.trim() || '';
+        const tsText = tsEl?.textContent.trim() || '';
+        const author = subheaderText.replace(new RegExp('\\s*' + tsText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '.*$'), '').replace(/(Edited|New).*$/, '').trim();
+        const replyContainers = Array.from(post.querySelectorAll('[role="group"][id^="message-body-"]'))
+          .filter(r => !r.id.includes(mid));
+        const replies = replyContainers.map(r => {
+          const rMid = (r.id.match(/message-body-(\d+)/) || [])[1] || '';
+          const rTs = r.querySelector('[data-tid="timestamp"]');
+          const rContent = rMid ? document.getElementById('content-' + rMid) : null;
+          const rAuthor = rMid ? document.getElementById('author-' + rMid) : null;
+          return {
+            mid: rMid,
+            author: rAuthor?.textContent.trim() || '',
+            timestamp: rTs?.textContent.trim() || '',
+            body: (rContent?.innerText || r.querySelector('[data-tid="message-body"]')?.innerText || '').trim(),
+          };
+        });
+        let openRepliesBtn = null;
+        const parent = post.parentElement;
+        if (parent) {
+          const allButtons = parent.querySelectorAll('button[aria-label*="replies from"], button[aria-label*="Open"][aria-label*="replies"]');
+          for (const btn of allButtons) {
+            if (post.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING) {
+              openRepliesBtn = btn;
+              break;
+            }
+          }
+        }
+        const moreLabel = openRepliesBtn?.getAttribute('aria-label') || '';
+        const moreMatch = moreLabel.match(/(\d+)\s+replies/);
+        const totalReplyCount = moreMatch ? Number(moreMatch[1]) : replies.length;
+        const hiddenReplies = Math.max(0, totalReplyCount - replies.length);
+
+        return {
+          mid,
+          subject: subjectEl?.textContent.trim() || '',
+          author,
+          timestamp: tsText,
+          body: (postBody?.innerText || '').trim(),
+          replies,
+          more_replies: hiddenReplies > 0 ? hiddenReplies : 0,
+        };
+      });
+
+      const ordered = parsed.slice().reverse();
+      return {
+        channel: channelName,
+        posts: ordered.slice(0, args.limit || 20),
+        total: parsed.length,
+        _virtualized: true,
+        _waited_ms: Date.now() - tStart,
+        _page: location.href,
+      };
+
+  _probe:
+    description: |
+      Diagnostic — returns the current Teams page state without touching
+      anything. Use to debug failed send_message / read_chat. Reports:
+      where we landed (URL + title), composer + send-button presence,
+      current chat header info, left-rail group + chat counts, top search
+      input + popup state, message stream height. Returns rich JSON; run
+      it after a failed call and share the output.
+    parameters: {}
+    returns: "{ url, title, ready, composer, send_btn, chat_header, left_rail, search, messages, time_ms }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 2000
+    script: |
+      const t0 = Date.now();
+      function quickCount(sel) { try { return document.querySelectorAll(sel).length; } catch { return 0; } }
+      function quickEl(sel) {
+        try {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          return {
+            present: true,
+            disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
+            dataTid: el.getAttribute('data-tid'),
+            ariaLabel: (el.getAttribute('aria-label') || '').slice(0, 60),
+            text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          };
+        } catch { return null; }
+      }
+      const lefRailLevel1 = [...document.querySelectorAll('[role="treeitem"][aria-level="1"]')].slice(0, 12).map(g => ({
+        label: (g.innerText || '').split('\n')[0].trim().slice(0, 30),
+        expanded: g.getAttribute('aria-expanded'),
+      }));
+      const composer = quickEl('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]');
+      const sendBtn = quickEl('[data-tid="sendMessageCommands-send"]');
+      const chatHeader = quickEl('[data-tid^="participant-"]') || quickEl('[role="banner"]');
+      const popup = document.querySelector('[data-tid="ms-searchux-popup"]');
+      const messageStream = document.querySelector('[role="log"], [data-tid="message-pane-list-viewport"]');
+      return {
+        ok: true,
+        url: location.href,
+        title: document.title,
+        ready: !!composer && !!sendBtn,
+        composer,
+        send_btn: sendBtn,
+        chat_header: chatHeader,
+        left_rail: {
+          level_1_count: quickCount('[role="treeitem"][aria-level="1"]'),
+          level_2_count: quickCount('[role="treeitem"][aria-level="2"]'),
+          groups: lefRailLevel1,
+        },
+        search: {
+          input: !!document.querySelector('#ms-searchux-input'),
+          toggle_btn: !!document.querySelector('[data-tid="title-bar-toggle-search-btn"]'),
+          popup_present: !!popup,
+          popup_text_len: popup ? (popup.innerText || '').length : 0,
+        },
+        messages: {
+          stream_found: !!messageStream,
+          scroll_height: messageStream?.scrollHeight ?? 0,
+          li_count: quickCount('[role="log"] [role="listitem"], [data-tid="message-pane-list-viewport"] [data-tid^="chat-pane-message"]'),
+        },
+        ckeditor_classes_seen: [...document.querySelectorAll('[data-tid="ckeditor"]')].map(e => e.className.toString().slice(0, 30)).slice(0, 3),
+        time_ms: Date.now() - t0,
+      };
+
+  send_message:
+    description: |
+      Send a text message. Three resolution tiers for `name`:
+        1. Left-rail treeitem (existing 1:1 / group chat).
+        2. Expand any collapsed left-rail GROUP heading (aria-expanded=false
+           on level-1 items like "Favorites", "Chats", "Teams and channels")
+           and retry tier 1 — fixes the case where the chat is hidden under
+           a folded section.
+        3. Top search box (#ms-searchux-input) — type the name, pick the
+           first matching person/chat from the suggestion popup, click it
+           to open (creating a NEW 1:1 chat if none exists).
+
+      Without `name`: send to the currently-open chat.
+
+      ⚠ Sends IMMEDIATELY without user confirmation. Caller is responsible
+      for verifying the target and content before invoking. Plain text only
+      — CKEditor 5 paste injection + click on the Send button.
+    parameters:
+      text:
+        type: string
+        label: Message text
+        required: true
+      name:
+        type: string
+        label: Chat name (optional — substring, case-insensitive). If omitted, sends to the currently-open chat.
+        required: false
+    returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const text = String(args.text || '').trim();
+      if (!text) return { ok: false, error: 'text is required and must be non-empty' };
+      const name = String(args.name || '').trim();
+
+      // Wait for Teams ready
+      const readyStart = Date.now();
+      while (Date.now() - readyStart < 30000) {
+        if (document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]')) break;
+        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0 && name) break;
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      // ─── Resolve target chat by name (3-tier) ─────────────────────
+      let switched = false;
+      let switchedMs = 0;
+      let resolveTier = null;      // 'already-here' / 'left-rail' / 'expanded-group' / 'search'
+      let groupsExpanded = [];
+      let searchPicked = null;
+
+      function findLeftRailMatch(lower) {
+        const items = [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')];
+        return items.find(t => (t.innerText || '').split('\n')[0].trim().toLowerCase().includes(lower)) || null;
+      }
+      async function waitForChatSwitch(lowerName, titleBefore, maxMs = 30000) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < maxMs) {
+          await new Promise(r => setTimeout(r, 200));
+          if (document.title !== titleBefore &&
+              (!lowerName || document.title.toLowerCase().includes(lowerName))) {
+            return Date.now() - t0;
+          }
+        }
+        return -1;
+      }
+
+      if (name) {
+        const lower = name.toLowerCase();
+        if (document.title.toLowerCase().includes(lower)) {
+          resolveTier = 'already-here';
+        } else {
+          // Tier 1: left rail as-is
+          let match = findLeftRailMatch(lower);
+          // Tier 2: expand collapsed level-1 group headings ("Favorites",
+          // "Chats", "Teams and channels", …) then retry the search.
+          if (!match) {
+            const collapsed = [...document.querySelectorAll('[role="treeitem"][aria-level="1"][aria-expanded="false"]')];
+            for (const g of collapsed) {
+              const label = (g.innerText || '').split('\n')[0].trim();
+              try { g.click(); groupsExpanded.push(label); } catch {}
+              await new Promise(r => setTimeout(r, 250));
+            }
+            if (groupsExpanded.length > 0) {
+              // Settle for the newly-revealed treeitems to mount
+              await new Promise(r => setTimeout(r, 600));
+              match = findLeftRailMatch(lower);
+            }
+          }
+
+          if (match) {
+            resolveTier = groupsExpanded.length > 0 ? 'expanded-group' : 'left-rail';
+            const titleBefore = document.title;
+            match.click();
+            const took = await waitForChatSwitch(lower, titleBefore);
+            if (took < 0) {
+              return { ok: false, error: 'Timed out waiting for chat switch (30s).', target_name: name, resolve_tier: resolveTier, groups_expanded: groupsExpanded };
+            }
+            switchedMs = took; switched = true;
+            await new Promise(r => setTimeout(r, 800));     // composer remount settle
+          } else {
+            // Tier 3: top search box. Open it (some Teams layouts collapse
+            // the search bar behind a button), then type and pick.
+            let searchInput = document.querySelector('#ms-searchux-input');
+            if (!searchInput) {
+              const toggle = document.querySelector('[data-tid="title-bar-toggle-search-btn"]');
+              if (toggle) {
+                try { toggle.click(); } catch {}
+                for (let i = 0; i < 20 && !searchInput; i++) {
+                  await new Promise(r => setTimeout(r, 150));
+                  searchInput = document.querySelector('#ms-searchux-input');
+                }
+              }
+            }
+            if (!searchInput) {
+              return {
+                ok: false,
+                error: `No left-rail match for "${name}" and search input not found. Open the chat manually first.`,
+                groups_expanded: groupsExpanded,
+                visible_chats: [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')].slice(0, 30).map(c => (c.innerText || '').split('\n')[0].trim()).filter(Boolean),
+              };
+            }
+            // Programmatic type — Teams uses React-controlled input and
+            // sometimes also listens to keyboard events to trigger the
+            // backend autosuggest fetch. Empirically: synthetic
+            // \`input\` alone left the popup empty; pairing it with
+            // beforeinput/keydown/keyup makes Teams actually call the
+            // search backend.
+            searchInput.focus(); searchInput.click();
+            await new Promise(r => setTimeout(r, 200));
+            const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            // Send char-by-char so React + Teams' autosuggest get every event
+            // they need (the all-at-once path was unreliable in probing).
+            nativeSetter.call(searchInput, '');
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            for (let i = 0; i < name.length; i++) {
+              const ch = name[i];
+              const partial = name.slice(0, i + 1);
+              searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+              nativeSetter.call(searchInput, partial);
+              searchInput.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: ch, bubbles: true, cancelable: true }));
+              searchInput.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ch, bubbles: true }));
+              searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+              await new Promise(r => setTimeout(r, 40));
+            }
+
+            // Wait for the suggestion popup to populate (Teams backend call
+            // takes ~500-2000ms over corp network).
+            let popup = null;
+            for (let i = 0; i < 40; i++) {
+              await new Promise(r => setTimeout(r, 200));
+              popup = document.querySelector('[data-tid="ms-searchux-popup"]');
+              if (popup && (popup.innerText || '').trim().length > 30) break;
+            }
+            if (!popup) {
+              // Clear the search box on failure
+              nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+              return { ok: false, error: 'Search popup did not appear within 8s', name };
+            }
+
+            // Pick the first item that mentions the name. Teams puts each
+            // result inside a role-presentation or role-option wrapper with
+            // the person's display name in innerText.
+            const lowerName = name.toLowerCase();
+            const allRows = [...popup.querySelectorAll('[role="option"], [data-tid^="search-suggestion"], [data-tid$="-result"], li, button, div[tabindex="-1"]')];
+            const seenTexts = new Set();
+            const candidates = [];
+            for (const el of allRows) {
+              const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+              if (!txt || seenTexts.has(txt) || txt.length > 200) continue;
+              seenTexts.add(txt);
+              if (txt.toLowerCase().includes(lowerName)) candidates.push({ el, text: txt });
+              if (candidates.length >= 8) break;
+            }
+            if (candidates.length === 0) {
+              const preview = (popup.innerText || '').slice(0, 400);
+              nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+              return { ok: false, error: `Search popup had no item matching "${name}"`, popup_text_preview: preview };
+            }
+            searchPicked = candidates[0].text;
+            resolveTier = 'search';
+
+            const titleBefore = document.title;
+            try { candidates[0].el.click(); } catch {}
+            // Search popup might intercept the click — also try keyboard Enter as fallback
+            const took = await waitForChatSwitch(null, titleBefore, 12000);
+            if (took < 0) {
+              // Fallback: synthesize Enter key on the search input
+              searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+              const took2 = await waitForChatSwitch(null, titleBefore, 8000);
+              if (took2 < 0) {
+                return { ok: false, error: 'Clicking the search result did not open a chat', search_picked: searchPicked };
+              }
+              switchedMs = took2;
+            } else {
+              switchedMs = took;
+            }
+            switched = true;
+            // The composer takes a beat to mount on a fresh 1:1 chat
+            await new Promise(r => setTimeout(r, 1200));
+          }
+        }
+      }
+
+      // Find composer (might have just remounted after switch)
+      let composer = document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]');
+      for (let i = 0; i < 30 && !composer; i++) {
+        await new Promise(r => setTimeout(r, 200));
+        composer = document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]');
+      }
+      if (!composer) {
+        return { ok: false, error: 'Compose box not found after waiting.' };
+      }
+
+      const sendBtn = document.querySelector('[data-tid="sendMessageCommands-send"]');
+      if (!sendBtn) {
+        return { ok: false, error: 'Send button not found.' };
+      }
+
+      // Focus + paste-inject
+      composer.focus();
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      const pasteEvent = new ClipboardEvent('paste', {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      });
+      composer.dispatchEvent(pasteEvent);
+      await new Promise(r => setTimeout(r, 300));
+
+      const composerText = composer.innerText.trim();
+      if (!composerText.includes(text)) {
+        return {
+          ok: false,
+          error: 'Composer did not accept the input — CKEditor may have rejected the paste.',
+          composer_text: composerText.slice(0, 100),
+        };
+      }
+
+      const disabled = sendBtn.hasAttribute('disabled') || sendBtn.getAttribute('aria-disabled') === 'true';
+      if (disabled) {
+        return { ok: false, error: 'Send button is still disabled after injection.' };
+      }
+
+      const headerParticipant = document.querySelector('[data-tid^="participant-"]');
+      const chatTitle = headerParticipant
+        ? (headerParticipant.innerText || '').trim().split('\n')[0]
+        : (document.title.split('|').map(s => s.trim())[1] || '');
+
+      sendBtn.click();
+      await new Promise(r => setTimeout(r, 400));
+
+      return {
+        ok: true,
+        sent_text: text,
+        chat_title: chatTitle,
+        switched,
+        switched_in_ms: switchedMs,
+        resolve_tier: resolveTier,
+        groups_expanded: groupsExpanded,
+        search_picked: searchPicked,
+        url: location.href,
+      };
