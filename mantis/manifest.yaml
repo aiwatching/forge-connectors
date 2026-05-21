@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.11.0"
+version: "0.12.0"
 author: forge
 category: connector
 mode: browser-side
@@ -396,6 +396,23 @@ tools:
           Mantis installs that expose it directly rather than as a
           custom field).
         required: false
+      keyword:
+        type: string
+        label: |
+          Mantis Keywords filter (Keyword column on the bug row). Comma-
+          separate for OR semantics (Mantis's filter form treats this
+          as a substring match). Examples: "QA Feature Test" or
+          "regression,security".
+        required: false
+      source:
+        type: string
+        label: |
+          Mantis Source field filter (the "Source" column shown on
+          search results — e.g. "QA", "Customer", "Internal"). Comma-
+          separate for multi-value. Forge first tries the standard
+          `source` URL param; if your install uses a custom field id
+          instead (custom_field_N), pass that via `extra_params`.
+        required: false
       extra_params:
         type: object
         label: |
@@ -612,6 +629,51 @@ tools:
       // Customized installs only honour `show_status`; the documented
       // `status_id[]` is silently ignored on those.
       if (statusIds.length > 0) params.set('show_status', statusIds.join(','));
+
+      // Keywords + Source — top-level filters mapping to the Mantis
+      // filter form's standard URL params. Comma-separated input
+      // splits to multiple values (multi-checkbox). The script also
+      // inspects the in-page form to discover the real field name
+      // ('source' vs custom_field_N) for installs that use a custom
+      // field; falls back to a literal 'source' / 'keywords' URL key.
+      function detectFormParamName(label) {
+        const wanted = String(label).toLowerCase();
+        const form = document.querySelector('form#filter_form, form[action*="view_all_set"]')
+          || document.forms[0];
+        if (!form) return null;
+        for (const el of form.querySelectorAll('select, input[type="text"], input[type="hidden"]')) {
+          const name = el.getAttribute('name') || '';
+          if (!name) continue;
+          // Match by adjacent <label> / <th> text
+          const row = el.closest('tr');
+          const rowText = (row?.textContent || '').toLowerCase();
+          if (rowText.includes(wanted)) return name;
+        }
+        return null;
+      }
+      const kwRaw = String(args.keyword || '').trim();
+      if (kwRaw) {
+        const kwName = detectFormParamName('keyword') || 'keywords';
+        const vals = kwRaw.split(',').map(s => s.trim()).filter(Boolean);
+        if (kwName.endsWith('[]') || vals.length > 1) {
+          params.delete(kwName);
+          vals.forEach(v => params.append(kwName, v));
+        } else {
+          params.set(kwName, vals.join(','));
+        }
+      }
+      const srcRaw = String(args.source || '').trim();
+      if (srcRaw) {
+        const srcName = detectFormParamName('source') || 'source';
+        const vals = srcRaw.split(',').map(s => s.trim()).filter(Boolean);
+        if (srcName.endsWith('[]') || vals.length > 1) {
+          params.delete(srcName);
+          vals.forEach(v => params.append(srcName, v));
+        } else {
+          params.set(srcName, vals.join(','));
+        }
+      }
+
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
       const extra = args.extra_params || {};
