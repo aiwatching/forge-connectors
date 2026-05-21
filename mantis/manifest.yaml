@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.10.2"
+version: "0.11.0"
 author: forge
 category: connector
 mode: browser-side
@@ -965,4 +965,116 @@ tools:
         };
       } catch (e) {
         return { ok: false, error: e.message };
+      }
+
+  update_bug:
+    description: |
+      Update a bug's status / resolution / assignee. Loads the
+      `bug_update_page.php` form, overrides the fields you specify,
+      and submits back to the form's own action URL (typically
+      `bug_update.php`). All params except `bug_id` are optional —
+      omit to leave that field alone. Accepts human names ('feedback',
+      'fixed') OR numeric ids. Mantis 1.x has no CSRF token on this
+      form — session cookie alone authorises.
+    destructive: true
+    parameters:
+      bug_id:
+        type: number
+        label: Bug ID
+        required: true
+      status:
+        type: string
+        label: New status
+        help: |
+          One of: new, feedback, acknowledged, confirmed, assigned,
+          resolved, closed. Or a numeric status_id (10/20/30/40/50/80/90).
+      resolution:
+        type: string
+        label: New resolution
+        help: |
+          One of: open, fixed, reopened, unable_to_reproduce, not_fixable,
+          duplicate, not_a_bug, suspended, wont_fix. Or numeric (10/20/30/
+          40/50/60/70/80/90).
+      handler:
+        type: string
+        label: Assignee (username or numeric id)
+    returns: "{ ok, status, finalUrl, applied: {...} }"
+    page:
+      url: "{base_url}/bug_update_page.php?bug_id={args.bug_id}"
+      on_target: "bug_id={args.bug_id}"
+    script: |
+      const STATUS_IDS = {
+        new: 10, feedback: 20, acknowledged: 30, confirmed: 40,
+        assigned: 50, resolved: 80, closed: 90,
+      };
+      const RESOLUTION_IDS = {
+        open: 10, fixed: 20, reopened: 30, unable_to_reproduce: 40,
+        not_fixable: 50, duplicate: 60, not_a_bug: 70, suspended: 80,
+        wont_fix: 90,
+      };
+      function toId(map, raw) {
+        const v = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+        if (!v) return null;
+        if (/^\d+$/.test(v)) return v;
+        return map[v] != null ? String(map[v]) : null;
+      }
+      function resolveHandler(value) {
+        const v = String(value || '').trim();
+        if (!v) return null;
+        if (/^\d+$/.test(v)) return v;
+        const lv = v.toLowerCase();
+        // Mantis renders ALL users in the handler_id <select> on this page.
+        const sel = document.querySelector('select[name="handler_id"]');
+        if (!sel) return null;
+        for (const opt of sel.options) {
+          const id = opt.value;
+          if (!/^\d+$/.test(id)) continue;
+          const label = (opt.textContent || '').toLowerCase().trim();
+          const m = label.match(/\(([a-z0-9_.-]+)\)\s*$/);
+          if (m && m[1] === lv) return id;
+          if (label === lv || label.includes(lv)) return id;
+        }
+        return null;
+      }
+
+      // Grab the page's own update form so we POST EVERY existing field
+      // (custom fields, hidden tokens, etc) — same trick search_bugs uses.
+      const form = document.querySelector(
+        'form[name="update_bug_form"], form[action*="bug_update"]',
+      );
+      if (!form) return { _error: 'bug_update form not found — page not loaded or layout changed' };
+
+      const fd = new FormData(form);
+      const applied = {};
+
+      const statusId = toId(STATUS_IDS, args.status);
+      if (statusId) { fd.set('status', statusId); applied.status = statusId; }
+      const resId = toId(RESOLUTION_IDS, args.resolution);
+      if (resId) { fd.set('resolution', resId); applied.resolution = resId; }
+      const handlerId = resolveHandler(args.handler);
+      if (handlerId) { fd.set('handler_id', handlerId); applied.handler_id = handlerId; }
+
+      // Mantis sometimes wants `bugnote_text` too; leave existing value
+      // unchanged. Don't echo anything sensitive into the field.
+      if (Object.keys(applied).length === 0) {
+        return { ok: false, error: 'no updatable fields supplied (need status / resolution / handler)' };
+      }
+
+      const action = form.getAttribute('action') || 'bug_update.php';
+      try {
+        const r = await fetch(action, {
+          method: 'POST',
+          body: fd,
+          credentials: 'include',
+          redirect: 'follow',
+        });
+        return {
+          ok: r.ok,
+          status: r.status,
+          finalUrl: r.url,
+          applied,
+          success: r.ok && (r.url.includes('bug_view') || r.url.includes('bug_id=' + args.bug_id)),
+        };
+      } catch (e) {
+        return { ok: false, error: e.message, applied };
       }

@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.3.0"
+version: "1.4.0"
 author: forge
 category: connector
 mode: server-side
@@ -468,6 +468,69 @@ tools:
         scope: 'assigned_to_me'
         state: '{args.state}'
         per_page: '{args.per_page}'
+
+  list_my_todos:
+    description: |
+      List pending Todos for the current user — same set that appears in
+      GitLab's web UI "Todos" panel. One call covers every project the
+      token can see, so this is the right tool for "watch for incoming
+      attention items" without one Job per MR.
+
+      Action cheat-sheet (observed in the wild on dops-git106):
+        - review_submitted   ← someone finished reviewing your MR
+                               (the case you want for "reviewer left
+                               feedback on my MR, go fix the code")
+        - mentioned          ← someone @-mentioned you in a comment
+        - review_requested   ← someone asked you to review their MR
+        - assigned           ← MR/Issue was assigned to you
+        - approval_required, unmergeable, build_failed,
+          directly_addressed, merge_train_removed, marked
+
+      Omit `action` to get all of them — dedup on `id` and let the
+      pipeline branch on `action_name`. Each todo carries `target` with
+      iid + project_id + title + web_url + author, so you can hand it
+      straight to a `mr-review-fix` pipeline.
+    protocol: http
+    parameters:
+      action:
+        type: string
+        description: |
+          One of the values above, or omit for all. **There is no
+          'commented' action — review-style comments arrive as
+          'review_submitted' or 'mentioned'.**
+        required: false
+      target_type:
+        type: string
+        description: "MergeRequest | Issue | Commit | DesignManagement::Design | AlertManagement::Alert. Omit for all."
+        required: false
+      state:
+        type: string
+        default: "pending"
+        description: "pending (default — unread) | done"
+      author_id:
+        type: number
+        description: "Filter by todo author (the user whose action created the todo)."
+        required: false
+      project_id:
+        type: number
+        description: "Filter to one project."
+        required: false
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/todos'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        action:      '{args.action}'
+        type:        '{args.target_type}'
+        state:       '{args.state}'
+        author_id:   '{args.author_id}'
+        project_id:  '{args.project_id}'
+        per_page:    '{args.per_page}'
 
   list_mrs:
     description: "List merge requests in a project with filters."
