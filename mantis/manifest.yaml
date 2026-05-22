@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.15.0"
+version: "0.16.0"
 author: forge
 category: connector
 mode: browser-side
@@ -858,24 +858,38 @@ tools:
       // Returns a Map<wantedLabel, HTMLSelectElement | null>.
       const filterFormMap = (() => {
         const map = new Map();
+        // Strategy 0 (BEST): Fortinet-style stable id `multi_<field>`.
+        // Probed live on mantis.fortinet.com — every filter multi-
+        // checkbox has id like multi_source / multi_keyword /
+        // multi_status / multi_severity / multi_priority /
+        // multi_resolution / multi_tag. Strip `multi_` → logical key.
+        // This sidesteps the fragile marker-walking that broke on
+        // Fortinet's deeply-nested filter table layout.
+        for (const sel of document.querySelectorAll('select[id^="multi_"]')) {
+          const key = sel.id.slice(6).toLowerCase();
+          if (key && !map.has(key)) map.set(key, sel);
+        }
         // Strategy 1: `show_<X>` hidden marker → next multicheckbox[]
+        // in **document order** (not sibling-walk — the marker and the
+        // select are typically in different <tr>s, sibling-walk loses
+        // them). Use a single linear scan: index all elements once,
+        // then for each marker find the first multicheckbox[] after.
+        const allEls = Array.from(document.querySelectorAll('*'));
         const markers = Array.from(document.querySelectorAll('input[name^="show_"], input[name="reportsource"]'));
         for (const marker of markers) {
-          // The associated <select name="multicheckbox[]"> is the NEXT
-          // multi-select after this marker in DOM order. Walk forward.
-          let n = marker;
-          while (n) {
-            n = n.nextElementSibling
-              || (n.parentElement && n.parentElement.nextElementSibling)
-              || null;
-            if (!n) break;
-            const sel = n.querySelector?.('select[name="multicheckbox[]"], select[name="multicheckbox"]');
-            if (sel) {
-              // Derive logical key: strip 'show_' prefix from marker name
-              const raw = marker.getAttribute('name') || '';
-              const key = raw.startsWith('show_') ? raw.slice(5).toLowerCase() : raw.toLowerCase();
-              map.set(key, sel);
+          const raw = marker.getAttribute('name') || '';
+          const key = raw.startsWith('show_') ? raw.slice(5).toLowerCase() : raw.toLowerCase();
+          if (map.has(key)) continue;  // Strategy 0 wins
+          const startIdx = allEls.indexOf(marker);
+          for (let i = startIdx + 1; i < allEls.length; i++) {
+            const el = allEls[i];
+            if (el.tagName === 'SELECT' && /^multicheckbox(_tags)?\[\]$/.test(el.getAttribute('name') || '')) {
+              map.set(key, el);
               break;
+            }
+            // Stop if we hit the NEXT marker — never cross marker boundaries.
+            if (el.tagName === 'INPUT' && /^(show_|reportsource$|resolution$)/.test(el.getAttribute('name') || '')) {
+              if (el !== marker) break;
             }
           }
         }
