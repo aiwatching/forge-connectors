@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.12.0"
+version: "0.12.1"
 author: forge
 category: connector
 mode: browser-side
@@ -630,49 +630,67 @@ tools:
       // `status_id[]` is silently ignored on those.
       if (statusIds.length > 0) params.set('show_status', statusIds.join(','));
 
-      // Keywords + Source — top-level filters mapping to the Mantis
-      // filter form's standard URL params. Comma-separated input
-      // splits to multiple values (multi-checkbox). The script also
-      // inspects the in-page form to discover the real field name
-      // ('source' vs custom_field_N) for installs that use a custom
-      // field; falls back to a literal 'source' / 'keywords' URL key.
-      function detectFormParamName(label) {
-        const wanted = String(label).toLowerCase();
-        const form = document.querySelector('form#filter_form, form[action*="view_all_set"]')
-          || document.forms[0];
-        if (!form) return null;
-        for (const el of form.querySelectorAll('select, input[type="text"], input[type="hidden"]')) {
-          const name = el.getAttribute('name') || '';
-          if (!name) continue;
-          // Match by adjacent <label> / <th> text
-          const row = el.closest('tr');
-          const rowText = (row?.textContent || '').toLowerCase();
-          if (rowText.includes(wanted)) return name;
+      // Keywords + Source — top-level filters. Mantis instances vary
+      // wildly: standard installs use literal `keywords` / `source`
+      // URL params; customized installs (e.g. Fortinet) wire these as
+      // `custom_field_<id>` selects. We scan the entire page for an
+      // element whose accessible label matches "source"/"keyword" and
+      // return its `name`. Falls back to a literal URL key + records
+      // what we did in _diagnostics for the caller.
+      const _filterDiag = {};
+      function detectFormParamName(wantedLabel) {
+        const want = String(wantedLabel).toLowerCase();
+        // Strategy 1: a <select>/<input> with id/name/title containing 'source'/'keyword'
+        const direct = Array.from(document.querySelectorAll('select, input'))
+          .find(el => {
+            const id = (el.id || '').toLowerCase();
+            const nm = (el.getAttribute('name') || '').toLowerCase();
+            const ti = (el.getAttribute('title') || '').toLowerCase();
+            return id.includes(want) || nm.includes(want) || ti.includes(want);
+          });
+        if (direct) return direct.getAttribute('name') || null;
+        // Strategy 2: a <th>/<td>/<label> whose text equals 'Source' (case-
+        // insensitive), then find the nearest input/select within the
+        // adjacent cell or row.
+        const labelEls = Array.from(document.querySelectorAll('th, td, label'));
+        for (const lab of labelEls) {
+          const t = (lab.textContent || '').trim().toLowerCase();
+          if (t !== want && !(t.startsWith(want) && t.length < want.length + 4)) continue;
+          // Look at next sibling cell first, then parent row's later cells
+          const candidates = [];
+          let n = lab.nextElementSibling;
+          while (n && candidates.length < 3) { candidates.push(n); n = n.nextElementSibling; }
+          const parentRow = lab.closest('tr');
+          if (parentRow) candidates.push(parentRow);
+          for (const c of candidates) {
+            const inp = c.querySelector?.('select, input[type="text"], input[type="hidden"]');
+            if (inp && inp.getAttribute('name')) return inp.getAttribute('name');
+          }
         }
         return null;
       }
-      const kwRaw = String(args.keyword || '').trim();
-      if (kwRaw) {
-        const kwName = detectFormParamName('keyword') || 'keywords';
-        const vals = kwRaw.split(',').map(s => s.trim()).filter(Boolean);
-        if (kwName.endsWith('[]') || vals.length > 1) {
-          params.delete(kwName);
-          vals.forEach(v => params.append(kwName, v));
+      function applyMultiValueFilter(rawValue, fallbackName, diagKey) {
+        const raw = String(rawValue || '').trim();
+        if (!raw) return;
+        const detected = detectFormParamName(diagKey);
+        const paramName = detected || fallbackName;
+        const isArrayLike = paramName.endsWith('[]');
+        const vals = raw.split(',').map(s => s.trim()).filter(Boolean);
+        if (isArrayLike || vals.length > 1) {
+          params.delete(paramName);
+          vals.forEach(v => params.append(paramName, v));
         } else {
-          params.set(kwName, vals.join(','));
+          params.set(paramName, vals[0]);
         }
+        _filterDiag[diagKey] = {
+          input: raw,
+          param_used: paramName,
+          detected_from_form: !!detected,
+          values: vals,
+        };
       }
-      const srcRaw = String(args.source || '').trim();
-      if (srcRaw) {
-        const srcName = detectFormParamName('source') || 'source';
-        const vals = srcRaw.split(',').map(s => s.trim()).filter(Boolean);
-        if (srcName.endsWith('[]') || vals.length > 1) {
-          params.delete(srcName);
-          vals.forEach(v => params.append(srcName, v));
-        } else {
-          params.set(srcName, vals.join(','));
-        }
-      }
+      applyMultiValueFilter(args.keyword, 'keywords', 'keyword');
+      applyMultiValueFilter(args.source, 'source', 'source');
 
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
@@ -842,6 +860,16 @@ tools:
         assignee: args.assignee || '',
         reporter: args.reporter || '',
         qa_assignee: args.qa_assignee || '',
+        keyword: args.keyword || '',
+        source: args.source || '',
+        // Diagnostics for keyword / source: which URL param they hit,
+        // whether the form-introspection found a match, the values
+        // applied. If `detected_from_form: false` and you're getting
+        // wrong results, your Mantis install probably uses
+        // custom_field_<id> for that field — open the filter page,
+        // inspect the corresponding <select>'s `name` attribute, and
+        // pass it via `extra_params: { custom_field_N: "QA" }`.
+        _filter_diagnostics: _filterDiag,
         // Echo back what resolved to user IDs vs fell through to client
         // substring. If a value was passed but neither resolved nor matched
         // anything, you'll see resolved_*=null AND zero results.
