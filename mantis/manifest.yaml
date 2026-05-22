@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.17.1"
+version: "0.17.2"
 author: forge
 category: connector
 mode: browser-side
@@ -848,10 +848,15 @@ tools:
 
       // Refresh scan budget — these filters might catch rows the
       // server didn't filter for us.
+      // Bumped to 30 pages (×200 = 6000 rows) because form-POST
+      // server-side path is unreliable from extension runner context
+      // (works in dev console / chrome-mcp, but returns unfiltered
+      // set when called via the bridge — different fetch context).
+      // Client-side scan over 6000 rows always works, just slower.
       if (keywordNeedles.length || sourceNeedles.length || severityNeedles.length) {
         hasClientFilter = true;
         PAGE_SIZE = 200;
-        MAX_PAGES = 10;
+        MAX_PAGES = 30;
       }
 
       // extra_params override — set last so callers can patch anything
