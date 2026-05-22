@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.14.1"
+version: "0.15.0"
 author: forge
 category: connector
 mode: browser-side
@@ -426,6 +426,15 @@ tools:
           `source` URL param; if your install uses a custom field id
           instead (custom_field_N), pass that via `extra_params`.
         required: false
+      resolution:
+        type: string
+        label: |
+          Resolution filter — accepts human names OR numeric ids.
+          Comma-separated for multi-value (matches ANY of them).
+          Names: open(10), fixed(20), reopened(30), unable_to_reproduce(40),
+          not_fixable(50), duplicate(60), not_a_bug(70), suspended(80),
+          wont_fix(90). Examples: "open", "open,reopened", "20".
+        required: false
       filter_form_mapping:
         type: object
         label: |
@@ -660,6 +669,27 @@ tools:
       // Customized installs only honour `show_status`; the documented
       // `status_id[]` is silently ignored on those.
       if (statusIds.length > 0) params.set('show_status', statusIds.join(','));
+
+      // Resolution — accept human names + comma-list, translate to ids.
+      // Mantis URL takes `resolution[]=<id>` (multi-value).
+      const RESOLUTION_IDS = {
+        open: 10, fixed: 20, reopened: 30, unable_to_reproduce: 40,
+        not_fixable: 50, duplicate: 60, not_a_bug: 70, suspended: 80,
+        wont_fix: 90,
+      };
+      const _resolutionIds = [];
+      const _resolutionRaw = String(args.resolution || '').trim();
+      if (_resolutionRaw) {
+        for (const tok of _resolutionRaw.split(',').map(s => s.trim()).filter(Boolean)) {
+          const norm = tok.toLowerCase().replace(/[\s-]+/g, '_');
+          const id = /^\d+$/.test(norm) ? norm : RESOLUTION_IDS[norm];
+          if (id != null) _resolutionIds.push(String(id));
+        }
+        if (_resolutionIds.length > 0) {
+          params.delete('resolution[]');
+          for (const id of _resolutionIds) params.append('resolution[]', id);
+        }
+      }
 
       // Keywords + Source — top-level filters. Mantis instances vary
       // wildly: standard installs use literal `keywords` / `source`
