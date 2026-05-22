@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.16.0"
+version: "0.17.0"
 author: forge
 category: connector
 mode: browser-side
@@ -426,6 +426,15 @@ tools:
           `source` URL param; if your install uses a custom field id
           instead (custom_field_N), pass that via `extra_params`.
         required: false
+      severity:
+        type: string
+        label: |
+          Severity filter — comma-separated. Accepts human names OR
+          numeric ids OR Fortinet S-codes:
+            feature(10), trivial(20), text(30), tweak(40),
+            minor(50)/S4, major(60)/S3, crash(70)/S2, block(80)/S1.
+          Examples: "high", "S1,S2", "block,crash".
+        required: false
       resolution:
         type: string
         label: |
@@ -817,9 +826,29 @@ tools:
       }
       const keywordNeedles = applyMultiValueFilter(args.keyword, 'keywords', 'keyword') || [];
       const sourceNeedles  = applyMultiValueFilter(args.source,  'source',   'source')  || [];
+
+      // Severity needles — translate Fortinet S-codes / human names to
+      // numeric ids before passing to applyMultiValueFilter so the
+      // option-text matcher hits correctly.
+      const SEVERITY_IDS = {
+        feature: 10, trivial: 20, text: 30, tweak: 40,
+        minor: 50, major: 60, crash: 70, block: 80,
+        s4: 50, s3: 60, s2: 70, s1: 80,
+      };
+      function translateEnumValue(map, raw) {
+        if (!raw) return '';
+        return String(raw).split(',').map(s => s.trim()).filter(Boolean).map(t => {
+          const norm = t.toLowerCase().replace(/[\s-]+/g, '_');
+          if (/^\d+$/.test(norm)) return norm;
+          return map[norm] != null ? String(map[norm]) : t;
+        }).join(',');
+      }
+      const _severityTranslated = translateEnumValue(SEVERITY_IDS, args.severity);
+      const severityNeedles = applyMultiValueFilter(_severityTranslated, 'severity', 'severity') || [];
+
       // Refresh scan budget — these filters might catch rows the
       // server didn't filter for us.
-      if (keywordNeedles.length || sourceNeedles.length) {
+      if (keywordNeedles.length || sourceNeedles.length || severityNeedles.length) {
         hasClientFilter = true;
         PAGE_SIZE = 200;
         MAX_PAGES = 10;
@@ -970,26 +999,32 @@ tools:
       const form = document.querySelector('form#filter_form, form[action*="view_all_set"], form[action*="view_all"]')
         || document.forms[0];
       const _formApplied = {};
-      if (form && (sourceNeedles.length > 0 || keywordNeedles.length > 0)) {
-        if (sourceNeedles.length > 0) {
-          const found = getFilterSelect('source');
-          if (found) {
-            const n = selectOptions(found.el, sourceNeedles);
-            _formApplied.source = { matched_options: n, mapped_via: found.src, marker_name: found.el.getAttribute('name') };
-          } else {
-            _formApplied.source = { matched_options: 0, mapped_via: null, error: 'no filter select found for "source" — paste _available_filter_fields back to me' };
-          }
-        }
-        if (keywordNeedles.length > 0) {
-          const found = getFilterSelect('keyword') || getFilterSelect('key');
+      // Apply each requested multicheckbox filter uniformly. Each
+      // entry maps a top-level arg → logical filter key (used to look
+      // up the select via filterFormMap) + the parsed needles. Adding
+      // a new filter is one row.
+      const multicheckboxFilters = [
+        { argKey: 'source',     logicalKey: 'source',   needles: sourceNeedles },
+        { argKey: 'keyword',    logicalKey: 'keyword',  needles: keywordNeedles },
+        { argKey: 'severity',   logicalKey: 'severity', needles: severityNeedles },
+      ];
+      const anyMulti = multicheckboxFilters.some(f => f.needles.length > 0);
+      if (form && anyMulti) {
+        for (const f of multicheckboxFilters) {
+          if (f.needles.length === 0) continue;
+          const found = getFilterSelect(f.logicalKey);
           if (found) {
             if (found.el.tagName === 'INPUT') {
-              found.el.value = keywordNeedles.join(',');
-              _formApplied.keyword = { mapped_via: found.src, marker_name: found.el.getAttribute('name'), as: 'text-input' };
+              // Text inputs (e.g. keywords on installs that render it
+              // as a plain text field).
+              found.el.value = f.needles.join(',');
+              _formApplied[f.argKey] = { mapped_via: found.src, marker_name: found.el.getAttribute('name'), as: 'text-input' };
             } else {
-              const n = selectOptions(found.el, keywordNeedles);
-              _formApplied.keyword = { matched_options: n, mapped_via: found.src, marker_name: found.el.getAttribute('name') };
+              const n = selectOptions(found.el, f.needles);
+              _formApplied[f.argKey] = { matched_options: n, mapped_via: found.src, select_id: found.el.id, marker_name: found.el.getAttribute('name') };
             }
+          } else {
+            _formApplied[f.argKey] = { matched_options: 0, mapped_via: null, error: `no filter select found for "${f.logicalKey}" — Mantis filter form may not expose it; will fall back to client-side` };
           }
         }
         // Submit the form. FormData picks up all values incl. our
@@ -1135,6 +1170,21 @@ tools:
           if (keywordNeedles.length > 0) {
             const hay = (colMatch(cells, 'keyword', 'keywords', 'category') || '').toLowerCase();
             if (!keywordNeedles.some(n => hay.includes(n))) continue;
+          }
+          if (severityNeedles.length > 0) {
+            // Severity column may render as "S4 - minor" / "minor"
+            // / just "50" — substring match against the user's
+            // already-translated needles (numeric strings + text).
+            const hay = (colMatch(cells, 'severity', 's') || '').toLowerCase();
+            // Build a permissive set: numeric ids AND their text names.
+            const _all = new Set();
+            for (const n of severityNeedles) {
+              _all.add(n);
+              for (const [name, id] of Object.entries(SEVERITY_IDS)) {
+                if (String(id) === n) _all.add(name);
+              }
+            }
+            if (!Array.from(_all).some(n => hay.includes(n))) continue;
           }
 
           const reporterText = colMatch(cells, 'reporter');
