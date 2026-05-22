@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.18.0"
+version: "0.18.1"
 author: forge
 category: connector
 mode: browser-side
@@ -1574,26 +1574,3 @@ tools:
       } catch (e) {
         return { ok: false, error: e.message, applied };
       }
-
-  list_bug_ids:
-    description: |
-      Pure transformer: converts a comma-separated string of bug ids
-      into the `{ bugs: [{id}, ...] }` shape the Jobs scheduler
-      iterates over. Used by mantis-bug-fix-batch — one Fire dispatches
-      one pipeline per id. Doesn't hit Mantis; the downstream
-      fetch-bug-details node pulls each bug's full data lazily.
-    parameters:
-      ids:
-        type: string
-        label: "Comma-separated Mantis bug ids"
-        required: true
-        help: "e.g. '1234567,1234568,1234569'. Spaces tolerated."
-    returns: "{ bugs: [{id}, ...] }"
-    # No `page:` block — this tool doesn't navigate. It still runs in
-    # the browser extension's runner (because mantis is browser-mode)
-    # but the script never touches the DOM.
-    script: |
-      const raw = String(args.ids || '');
-      const ids = raw.split(',').map(s => s.trim()).filter(Boolean)
-        .map(s => parseInt(s, 10)).filter(Number.isFinite);
-      return { bugs: ids.map(id => ({ id })) };
