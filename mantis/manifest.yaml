@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.18.1"
+version: "0.18.2"
 author: forge
 category: connector
 mode: browser-side
@@ -164,11 +164,24 @@ tools:
       url: "{base_url}/bug_view_page.php?bug_id={args.bug_id}"
       on_target: "bug_id={args.bug_id}"
     script: |
-      const detailsTitle = Array.from(document.querySelectorAll('.form-title'))
+      // Wait up to 5s for the bug-detail DOM to render. Most "bug
+      // detail table not found" errors are timing races: the runner
+      // navigates to bug_view_page.php?bug_id=N, on_target matches
+      // the URL, but the page hasn't finished rendering when the
+      // script eval'd. Poll for the .form-title element instead of
+      // failing immediately.
+      const findDetailsTitle = () => Array.from(document.querySelectorAll('.form-title'))
         .find(e => e.textContent && e.textContent.trim().startsWith('Viewing Bug'));
+      let detailsTitle = findDetailsTitle();
+      if (!detailsTitle) {
+        for (let i = 0; i < 50 && !detailsTitle; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          detailsTitle = findDetailsTitle();
+        }
+      }
       const detailsTable = detailsTitle ? detailsTitle.closest('table') : null;
       if (!detailsTable) {
-        return { _error: 'bug detail table not found on ' + location.pathname };
+        return { _error: 'bug detail table not found after 5s wait on ' + location.pathname };
       }
 
       // Top header row pattern (row 1 = labels, row 2 = values)
