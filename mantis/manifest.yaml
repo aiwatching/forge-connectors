@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.13.0"
+version: "0.14.0"
 author: forge
 category: connector
 mode: browser-side
@@ -27,6 +27,19 @@ settings:
     type: string
     label: Default project name
     description: "Optional — used when no project specified in queries"
+  filter_form_mapping:
+    type: object
+    label: "Filter-form field mapping (advanced)"
+    description: |
+      For heavily customized Mantis installs where auto-detection
+      picks the wrong filter widget. Maps a logical filter name to
+      the actual `show_<group>` marker name on your filter page.
+      Inspect via DevTools on view_all_bug_page.php: find the
+      <input name="show_X"> hidden input that precedes the Source /
+      Keyword / etc. multicheckbox[] select.
+      Example:
+        source:  reportsource   # not show_source — Fortinet skin
+        keyword: key            # show_key on this install
 
 # Plugin-level: how the extension's runner finds / opens authenticated tabs.
 host_match: "{base_url}/*"
@@ -778,8 +791,169 @@ tools:
         else params.set(k, String(v));
       }
       const filterUrl = baseDir + 'view_all_set.php?' + params.toString();
-      const appliedVia = 'url-query';
-      const r = await fetch(filterUrl, { credentials: 'include' }).catch((e) => ({ _err: e.message }));
+      let appliedVia = 'url-query';
+
+      // ── server-side filter via form POST ─────────────────────
+      //
+      // Some filters (Source, Keyword, custom multicheckbox groups)
+      // can't be set by URL params alone on customized Mantis installs
+      // (Fortinet etc.) — the form has many `<select name="multicheckbox[]">`
+      // and Mantis identifies which one is which by DOM position
+      // (preceding `show_<group>` marker). To target them we need to
+      // mutate the actual <select>.selected on the form, then POST.
+      //
+      // Generic helper — reusable for any browser-protocol connector
+      // whose backend is a form-driven filter page (Mantis, Jira
+      // queue view, PMDB advanced search, ...). Strategy:
+      //   1. Pair every `<input name="show_<X>">` marker with the
+      //      next `<select name="multicheckbox[]">` after it.
+      //   2. Treat <X> (and any associated <td class="category">
+      //      label nearby) as the filter's logical key.
+      //   3. Settings can override the map via `filter_form_mapping`
+      //      for installs where auto-detection misses.
+      //
+      // Returns a Map<wantedLabel, HTMLSelectElement | null>.
+      const filterFormMap = (() => {
+        const map = new Map();
+        // Strategy 1: `show_<X>` hidden marker → next multicheckbox[]
+        const markers = Array.from(document.querySelectorAll('input[name^="show_"], input[name="reportsource"]'));
+        for (const marker of markers) {
+          // The associated <select name="multicheckbox[]"> is the NEXT
+          // multi-select after this marker in DOM order. Walk forward.
+          let n = marker;
+          while (n) {
+            n = n.nextElementSibling
+              || (n.parentElement && n.parentElement.nextElementSibling)
+              || null;
+            if (!n) break;
+            const sel = n.querySelector?.('select[name="multicheckbox[]"], select[name="multicheckbox"]');
+            if (sel) {
+              // Derive logical key: strip 'show_' prefix from marker name
+              const raw = marker.getAttribute('name') || '';
+              const key = raw.startsWith('show_') ? raw.slice(5).toLowerCase() : raw.toLowerCase();
+              map.set(key, sel);
+              break;
+            }
+          }
+        }
+        // Strategy 2: <td class="category">LABEL</td> → next <td>'s input/select
+        // (Mantis standard layout — gives canonical labels)
+        const cats = Array.from(document.querySelectorAll('td.category, th.category'));
+        for (const cat of cats) {
+          const label = (cat.textContent || '').trim().toLowerCase().replace(/[:：]\s*$/, '');
+          if (!label) continue;
+          let n = cat.nextElementSibling;
+          let hops = 0;
+          while (n && hops < 4) {
+            if (n.tagName === 'TD' || n.tagName === 'TH') {
+              const sel = n.querySelector?.('select[name], input[type="text"][name]');
+              if (sel && !map.has(label)) map.set(label, sel);
+              if (sel) break;
+            }
+            n = n.nextElementSibling;
+            hops += 1;
+          }
+        }
+        return map;
+      })();
+
+      function selectOptions(sel, needles) {
+        if (!sel || sel.tagName !== 'SELECT') return 0;
+        const lc = needles.map(n => String(n).toLowerCase());
+        let matched = 0;
+        for (const opt of sel.options) {
+          const txt = (opt.textContent || '').trim().toLowerCase();
+          const val = (opt.value || '').toLowerCase();
+          const hit = lc.some(n =>
+            txt === n || val === n || (n.length > 1 && txt.includes(n))
+          );
+          opt.selected = hit;
+          if (hit) matched++;
+        }
+        return matched;
+      }
+
+      // User's optional override: settings.filter_form_mapping is a
+      // dict like { "source": "reportsource", "keyword": "key" } that
+      // tells us which marker name to use for each logical filter.
+      const userOverrides = (settings?.filter_form_mapping || {});
+      function getFilterSelect(want) {
+        const key = String(want).toLowerCase();
+        // Try user override → auto-mapped marker → category-label
+        const override = userOverrides[key];
+        if (override) {
+          const el = filterFormMap.get(String(override).toLowerCase());
+          if (el) return { el, src: 'override' };
+        }
+        const direct = filterFormMap.get(key);
+        if (direct) return { el: direct, src: 'marker-or-label' };
+        // Fallback: try plural / common variants
+        for (const variant of [key + 's', key.replace(/s$/, ''), 'report' + key]) {
+          const el = filterFormMap.get(variant);
+          if (el) return { el, src: `variant:${variant}` };
+        }
+        return null;
+      }
+
+      // Pre-select options on the form for filters that need server-side handling.
+      let usedFormPost = false;
+      const form = document.querySelector('form#filter_form, form[action*="view_all_set"], form[action*="view_all"]')
+        || document.forms[0];
+      const _formApplied = {};
+      if (form && (sourceNeedles.length > 0 || keywordNeedles.length > 0)) {
+        if (sourceNeedles.length > 0) {
+          const found = getFilterSelect('source');
+          if (found) {
+            const n = selectOptions(found.el, sourceNeedles);
+            _formApplied.source = { matched_options: n, mapped_via: found.src, marker_name: found.el.getAttribute('name') };
+          } else {
+            _formApplied.source = { matched_options: 0, mapped_via: null, error: 'no filter select found for "source" — paste _available_filter_fields back to me' };
+          }
+        }
+        if (keywordNeedles.length > 0) {
+          const found = getFilterSelect('keyword') || getFilterSelect('key');
+          if (found) {
+            if (found.el.tagName === 'INPUT') {
+              found.el.value = keywordNeedles.join(',');
+              _formApplied.keyword = { mapped_via: found.src, marker_name: found.el.getAttribute('name'), as: 'text-input' };
+            } else {
+              const n = selectOptions(found.el, keywordNeedles);
+              _formApplied.keyword = { matched_options: n, mapped_via: found.src, marker_name: found.el.getAttribute('name') };
+            }
+          }
+        }
+        // Submit the form. FormData picks up all values incl. our
+        // option.selected mutations. Layered on top of our existing
+        // URL params (set on the form's hidden inputs if any).
+        try {
+          const fd = new FormData(form);
+          // Make sure our URL params also win — overlay them.
+          for (const [k, v] of params.entries()) {
+            if (!fd.has(k) || fd.get(k) === '') fd.set(k, v);
+          }
+          const action = form.getAttribute('action') || (baseDir + 'view_all_set.php');
+          const resp = await fetch(action, {
+            method: 'POST',
+            body: fd,
+            credentials: 'include',
+            redirect: 'follow',
+          });
+          if (resp.ok) {
+            appliedVia = 'form-post';
+            usedFormPost = true;
+          } else {
+            _formApplied._post_status = resp.status;
+          }
+        } catch (e) {
+          _formApplied._post_error = e.message;
+        }
+      }
+      _filterDiag._form_applied = _formApplied;
+      _filterDiag._applied_via = appliedVia;
+
+      const r = usedFormPost
+        ? { ok: true }  // form POST already applied filter
+        : await fetch(filterUrl, { credentials: 'include' }).catch((e) => ({ _err: e.message }));
       if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
 
       const STATUS_RE = /^(new|feedback|acknowledged|confirmed|assigned|open|resolved|closed|reopened)$/i;
