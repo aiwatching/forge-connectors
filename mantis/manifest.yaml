@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.12.2"
+version: "0.12.3"
 author: forge
 category: connector
 mode: browser-side
@@ -638,19 +638,67 @@ tools:
       // return its `name`. Falls back to a literal URL key + records
       // what we did in _diagnostics for the caller.
       const _filterDiag = {};
+
+      // Build a debug index of every visible form input on the filter
+      // page along with its nearest text label. The user pastes this
+      // back when source/keyword detection fails so we can target the
+      // real field name (custom_field_<N>) explicitly.
+      const _availableFilterFields = [];
+      try {
+        for (const inp of document.querySelectorAll('select, input[type="text"], input[type="hidden"]')) {
+          const nm = inp.getAttribute('name');
+          if (!nm) continue;
+          // Try to find a label: same-row <th>, preceding sibling cell,
+          // or <label for=id> text.
+          let label = '';
+          const id = inp.id;
+          if (id) {
+            const labFor = document.querySelector(`label[for="${id}"]`);
+            if (labFor) label = (labFor.textContent || '').trim();
+          }
+          if (!label) {
+            // Walk up to find a containing cell, then look at its row
+            const cell = inp.closest('td, th');
+            if (cell) {
+              let prev = cell.previousElementSibling;
+              let hops = 0;
+              while (prev && hops < 3) {
+                const t = (prev.textContent || '').trim().replace(/\s+/g, ' ');
+                if (t && t.length < 80) { label = t; break; }
+                prev = prev.previousElementSibling;
+                hops += 1;
+              }
+            }
+          }
+          if (!label) {
+            const cell = inp.closest('td, th');
+            const row = cell?.closest('tr');
+            if (row) {
+              // First <th> in the row often holds the label.
+              const th = row.querySelector('th');
+              if (th && !th.contains(inp)) label = (th.textContent || '').trim();
+            }
+          }
+          _availableFilterFields.push({ name: nm, label: label.replace(/[:：]\s*$/, ''), tag: inp.tagName });
+        }
+      } catch {}
+
       function detectFormParamName(wantedLabel) {
         const want = String(wantedLabel).toLowerCase();
         const wantPlural = want + 's';
         // Strategy A (PREFERRED): label-anchored.
-        // Find a <th>/<td>/<label> whose TRIMMED text equals "Source"
-        // or "Sources" (case-insensitive, trailing colon stripped).
-        // Then look at the NEXT 1-3 sibling cells for the input/select.
-        // This avoids false positives where a different field
-        // (e.g. "Report Source") has 'source' in its name.
+        // Find a <th>/<td>/<label> whose TRIMMED text is "Source",
+        // "Sources", "Bug Source", "Source of Bug" etc. — anything
+        // where the wanted word stands alone (word-boundary), short
+        // enough that it's a field label, not a paragraph. Trailing
+        // colon stripped. Then look at next 1-3 sibling cells for
+        // the actual <select>/<input>.
+        const wbRe = new RegExp('(^|[\\s|/])' + want + '($|[\\s:|/])', 'i');
         const labelEls = Array.from(document.querySelectorAll('th, td, label'));
         for (const lab of labelEls) {
-          const t = (lab.textContent || '').trim().toLowerCase().replace(/[:：]\s*$/, '');
-          if (t !== want && t !== wantPlural) continue;
+          const t = (lab.textContent || '').trim().replace(/[:：]\s*$/, '');
+          if (!t || t.length > 40) continue;
+          if (!wbRe.test(t.toLowerCase())) continue;
           let n = lab.nextElementSibling;
           let hops = 0;
           while (n && hops < 3) {
@@ -872,6 +920,12 @@ tools:
         // inspect the corresponding <select>'s `name` attribute, and
         // pass it via `extra_params: { custom_field_N: "QA" }`.
         _filter_diagnostics: _filterDiag,
+        // Dump every (label, name) pair on the filter form so callers
+        // can see EXACTLY what params their Mantis exposes. Paste back
+        // when source/keyword detection picks the wrong field — the
+        // right `custom_field_<N>` to put in `extra_params` will be
+        // here.
+        _available_filter_fields: _availableFilterFields,
         // Echo back what resolved to user IDs vs fell through to client
         // substring. If a value was passed but neither resolved nor matched
         // anything, you'll see resolved_*=null AND zero results.
