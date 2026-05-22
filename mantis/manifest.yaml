@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.12.1"
+version: "0.12.2"
 author: forge
 category: connector
 mode: browser-side
@@ -640,33 +640,35 @@ tools:
       const _filterDiag = {};
       function detectFormParamName(wantedLabel) {
         const want = String(wantedLabel).toLowerCase();
-        // Strategy 1: a <select>/<input> with id/name/title containing 'source'/'keyword'
-        const direct = Array.from(document.querySelectorAll('select, input'))
-          .find(el => {
-            const id = (el.id || '').toLowerCase();
-            const nm = (el.getAttribute('name') || '').toLowerCase();
-            const ti = (el.getAttribute('title') || '').toLowerCase();
-            return id.includes(want) || nm.includes(want) || ti.includes(want);
-          });
-        if (direct) return direct.getAttribute('name') || null;
-        // Strategy 2: a <th>/<td>/<label> whose text equals 'Source' (case-
-        // insensitive), then find the nearest input/select within the
-        // adjacent cell or row.
+        const wantPlural = want + 's';
+        // Strategy A (PREFERRED): label-anchored.
+        // Find a <th>/<td>/<label> whose TRIMMED text equals "Source"
+        // or "Sources" (case-insensitive, trailing colon stripped).
+        // Then look at the NEXT 1-3 sibling cells for the input/select.
+        // This avoids false positives where a different field
+        // (e.g. "Report Source") has 'source' in its name.
         const labelEls = Array.from(document.querySelectorAll('th, td, label'));
         for (const lab of labelEls) {
-          const t = (lab.textContent || '').trim().toLowerCase();
-          if (t !== want && !(t.startsWith(want) && t.length < want.length + 4)) continue;
-          // Look at next sibling cell first, then parent row's later cells
-          const candidates = [];
+          const t = (lab.textContent || '').trim().toLowerCase().replace(/[:：]\s*$/, '');
+          if (t !== want && t !== wantPlural) continue;
           let n = lab.nextElementSibling;
-          while (n && candidates.length < 3) { candidates.push(n); n = n.nextElementSibling; }
-          const parentRow = lab.closest('tr');
-          if (parentRow) candidates.push(parentRow);
-          for (const c of candidates) {
-            const inp = c.querySelector?.('select, input[type="text"], input[type="hidden"]');
+          let hops = 0;
+          while (n && hops < 3) {
+            const inp = n.querySelector?.('select, input[type="text"], input[type="hidden"]');
             if (inp && inp.getAttribute('name')) return inp.getAttribute('name');
+            n = n.nextElementSibling;
+            hops += 1;
           }
         }
+        // Strategy B (fallback): exact-name match (NOT substring) on
+        // any select/input. Matches standard MantisBT URL params
+        // `source` / `keywords` when there are no labels at all.
+        const directExact = Array.from(document.querySelectorAll('select, input'))
+          .find(el => {
+            const nm = (el.getAttribute('name') || '').toLowerCase().replace(/\[\]$/, '');
+            return nm === want || nm === wantPlural;
+          });
+        if (directExact) return directExact.getAttribute('name');
         return null;
       }
       function applyMultiValueFilter(rawValue, fallbackName, diagKey) {
