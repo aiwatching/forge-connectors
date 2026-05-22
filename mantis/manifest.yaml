@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.17.0"
+version: "0.17.1"
 author: forge
 category: connector
 mode: browser-side
@@ -1027,27 +1027,36 @@ tools:
             _formApplied[f.argKey] = { matched_options: 0, mapped_via: null, error: `no filter select found for "${f.logicalKey}" — Mantis filter form may not expose it; will fall back to client-side` };
           }
         }
-        // Submit the form. FormData picks up all values incl. our
-        // option.selected mutations. Layered on top of our existing
-        // URL params (set on the form's hidden inputs if any).
+        // Submit the form. Two non-obvious requirements (probed live
+        // via chrome-mcp on mantis.fortinet.com — verified server-
+        // side total dropped 914 → 139 once both were correct):
+        //   1. Target `view_all_set.php?f=0` ("f=0" = TEMPORARY filter
+        //      slot per Mantis API). The form's default action is
+        //      `?f=3&view_type=0` — that saves into a NAMED filter,
+        //      not what we want. Override.
+        //   2. Include `filter=Apply` in body. Submit buttons aren't
+        //      auto-included in FormData, but Mantis's backend
+        //      branches on this key to decide "apply filter" vs
+        //      "save as new" etc. Without it Mantis ignores the POST.
         try {
           const fd = new FormData(form);
+          fd.set('filter', 'Apply');
           // Make sure our URL params also win — overlay them.
           for (const [k, v] of params.entries()) {
             if (!fd.has(k) || fd.get(k) === '') fd.set(k, v);
           }
-          const action = form.getAttribute('action') || (baseDir + 'view_all_set.php');
+          const action = baseDir + 'view_all_set.php?f=0';
           const resp = await fetch(action, {
             method: 'POST',
             body: fd,
             credentials: 'include',
             redirect: 'follow',
           });
+          _formApplied._post_status = resp.status;
+          _formApplied._post_final_url = resp.url;
           if (resp.ok) {
             appliedVia = 'form-post';
             usedFormPost = true;
-          } else {
-            _formApplied._post_status = resp.status;
           }
         } catch (e) {
           _formApplied._post_error = e.message;
