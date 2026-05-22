@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.12.3"
+version: "0.13.0"
 author: forge
 category: connector
 mode: browser-side
@@ -516,12 +516,17 @@ tools:
       const assigneeNeedles = handlerId    ? [] : splitNeedles(args.assignee);
       const reporterNeedles = reporterId   ? [] : splitNeedles(args.reporter);
       const qaNeedles       = qaAssigneeId ? [] : splitNeedles(args.qa_assignee);
-      const hasClientFilter = assigneeNeedles.length > 0
+      // NOTE: `sourceNeedles` / `keywordNeedles` are populated later
+      // by applyMultiValueFilter. Recompute the client-filter flag
+      // there so PAGE_SIZE / MAX_PAGES reflect ALL active filters.
+      let hasClientFilter = assigneeNeedles.length > 0
         || reporterNeedles.length > 0
         || qaNeedles.length > 0;
-      // Client fallback active → scan more pages.
-      const PAGE_SIZE = hasClientFilter ? 200 : 100;
-      const MAX_PAGES = hasClientFilter ? 10 : 2;
+      // Client fallback active → scan more pages. Recalculated after
+      // applyMultiValueFilter runs (which may add source/keyword
+      // needles).
+      let PAGE_SIZE = hasClientFilter ? 200 : 100;
+      let MAX_PAGES = hasClientFilter ? 10 : 2;
 
       // ─── Build & submit filter via the page's REAL form ──────────────
       // Some customized Mantis installs ignore URL params like \`status_id[]\`
@@ -719,28 +724,50 @@ tools:
         if (directExact) return directExact.getAttribute('name');
         return null;
       }
+      // Apply each filter as TWO best-effort layers:
+      //   1. URL param IF a matching form field exists. Narrows the
+      //      server-side response (saves bandwidth, finds more pages).
+      //   2. Client-side substring match on the result row's column.
+      //      The Fortinet-style Mantis exposes Source as a result
+      //      COLUMN but doesn't have a Source filter widget — so the
+      //      URL layer no-ops and we rely on client-side here.
+      //
+      // Tracked as client-side needles consumed AFTER the result
+      // table is fetched + parsed (further down in this script).
       function applyMultiValueFilter(rawValue, fallbackName, diagKey) {
         const raw = String(rawValue || '').trim();
-        if (!raw) return;
+        if (!raw) return null;
         const detected = detectFormParamName(diagKey);
-        const paramName = detected || fallbackName;
-        const isArrayLike = paramName.endsWith('[]');
         const vals = raw.split(',').map(s => s.trim()).filter(Boolean);
-        if (isArrayLike || vals.length > 1) {
-          params.delete(paramName);
-          vals.forEach(v => params.append(paramName, v));
-        } else {
-          params.set(paramName, vals[0]);
+        let urlParam = null;
+        if (detected) {
+          const isArrayLike = detected.endsWith('[]');
+          if (isArrayLike || vals.length > 1) {
+            params.delete(detected);
+            vals.forEach(v => params.append(detected, v));
+          } else {
+            params.set(detected, vals[0]);
+          }
+          urlParam = detected;
         }
         _filterDiag[diagKey] = {
           input: raw,
-          param_used: paramName,
+          param_used: urlParam,           // null when no URL field
           detected_from_form: !!detected,
+          client_side_needles: vals.map(v => v.toLowerCase()),
           values: vals,
         };
+        return vals.map(v => v.toLowerCase());
       }
-      applyMultiValueFilter(args.keyword, 'keywords', 'keyword');
-      applyMultiValueFilter(args.source, 'source', 'source');
+      const keywordNeedles = applyMultiValueFilter(args.keyword, 'keywords', 'keyword') || [];
+      const sourceNeedles  = applyMultiValueFilter(args.source,  'source',   'source')  || [];
+      // Refresh scan budget — these filters might catch rows the
+      // server didn't filter for us.
+      if (keywordNeedles.length || sourceNeedles.length) {
+        hasClientFilter = true;
+        PAGE_SIZE = 200;
+        MAX_PAGES = 10;
+      }
 
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
@@ -852,6 +879,20 @@ tools:
             if (!assigneeNeedles.some(n => hay.includes(n))) continue;
           }
 
+          // Source / Keyword — same client-side substring pattern.
+          // Mantis filter pages on customized installs (Fortinet, etc.)
+          // don't expose Source as a filterable widget — it shows up
+          // as a result column instead. Filter here so the user's
+          // `source: "QA"` actually narrows results.
+          if (sourceNeedles.length > 0) {
+            const hay = colMatch(cells, 'source').toLowerCase();
+            if (!sourceNeedles.some(n => hay.includes(n))) continue;
+          }
+          if (keywordNeedles.length > 0) {
+            const hay = (colMatch(cells, 'keyword', 'keywords', 'category') || '').toLowerCase();
+            if (!keywordNeedles.some(n => hay.includes(n))) continue;
+          }
+
           const reporterText = colMatch(cells, 'reporter');
           if (reporterNeedles.length > 0) {
             const hay = reporterText.toLowerCase();
@@ -875,7 +916,8 @@ tools:
             status,
             priority: col(cells, 'Priority'),
             severity: col(cells, 'Severity') || col(cells, 'S'),
-            keywords: col(cells, 'Keyword') || col(cells, 'Category'),
+            keywords: colMatch(cells, 'keyword', 'keywords', 'category'),
+            source: colMatch(cells, 'source'),
             reporter: reporterText,
             assignee: assigneeText,
             qa_assignee: qaText,
