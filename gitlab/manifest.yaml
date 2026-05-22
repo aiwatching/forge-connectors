@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.4.0"
+version: "1.5.0"
 author: forge
 category: connector
 mode: server-side
@@ -449,12 +449,15 @@ tools:
 
   # ─── Merge requests ────────────────────────────────────────
   list_my_mrs:
-    description: "List MRs assigned to me across all projects."
+    description: "List MRs assigned to me (as reviewer/assignee) across all projects."
     protocol: http
     parameters:
       state:
         type: string
         default: "opened"
+      target_branch:
+        type: string
+        description: "Optional target-branch filter, e.g. main / 7.6"
       per_page:
         type: number
         default: 50
@@ -467,6 +470,36 @@ tools:
       query:
         scope: 'assigned_to_me'
         state: '{args.state}'
+        target_branch: '{args.target_branch}'
+        per_page: '{args.per_page}'
+
+  list_authored_mrs:
+    description: |
+      List MRs I created (where I'm the author). Use this for
+      "watch my own MRs for incoming review comments" — pair with
+      the mr-review-fix pipeline. Distinct from list_my_mrs which
+      covers MRs assigned to me as reviewer/assignee.
+    protocol: http
+    parameters:
+      state:
+        type: string
+        default: "opened"
+      target_branch:
+        type: string
+        description: "Optional target-branch filter, e.g. main / 7.6"
+      per_page:
+        type: number
+        default: 50
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        scope: 'created_by_me'
+        state: '{args.state}'
+        target_branch: '{args.target_branch}'
         per_page: '{args.per_page}'
 
   list_my_todos:
