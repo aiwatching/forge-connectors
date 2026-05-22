@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.5.0"
+version: "1.6.0"
 author: forge
 category: connector
 mode: server-side
@@ -501,6 +501,92 @@ tools:
         state: '{args.state}'
         target_branch: '{args.target_branch}'
         per_page: '{args.per_page}'
+
+  search_mrs:
+    description: |
+      Universal merge-request search across all projects the user can
+      see. Mirrors GitLab's `GET /merge_requests` API — every filter
+      param is optional, combine as needed. Replaces the narrower
+      list_my_mrs / list_authored_mrs for filter-driven workflows
+      (e.g. "MRs where I'm reviewer", "all opened MRs targeting 7.6
+      with label security").
+
+      Use `reviewer_username` to watch MRs awaiting your review —
+      NOT `scope=assigned_to_me` (which matches assignees, a different
+      GitLab role from reviewers).
+    protocol: http
+    parameters:
+      state:
+        type: string
+        default: "opened"
+        description: "opened | closed | merged | locked | all"
+      scope:
+        type: string
+        description: "created_by_me | assigned_to_me | all (omit for unscoped)"
+      author_username:
+        type: string
+        description: "MR author's GitLab username"
+      assignee_username:
+        type: string
+        description: "MR assignee's GitLab username"
+      reviewer_username:
+        type: string
+        description: "MR reviewer's GitLab username — use for 'awaiting my review' watchers"
+      source_branch:
+        type: string
+      target_branch:
+        type: string
+        description: "e.g. main / 7.6"
+      labels:
+        type: string
+        description: "Comma-separated label names; matches ALL listed"
+      milestone:
+        type: string
+      search:
+        type: string
+        description: "Full-text in title / description"
+      wip:
+        type: string
+        description: "yes | no — filter draft/WIP MRs"
+      created_after:
+        type: string
+        description: "ISO 8601 datetime, e.g. 2026-01-01T00:00:00Z"
+      updated_after:
+        type: string
+      per_page:
+        type: number
+        default: 50
+      order_by:
+        type: string
+        default: "updated_at"
+        description: "created_at | updated_at | title"
+      sort:
+        type: string
+        default: "desc"
+        description: "asc | desc"
+    request:
+      method: GET
+      url: '{settings.base_url}/api/v4/merge_requests'
+      headers:
+        Authorization: 'Bearer {settings.token}'
+        Accept: 'application/json'
+      query:
+        state: '{args.state}'
+        scope: '{args.scope}'
+        author_username: '{args.author_username}'
+        assignee_username: '{args.assignee_username}'
+        reviewer_username: '{args.reviewer_username}'
+        source_branch: '{args.source_branch}'
+        target_branch: '{args.target_branch}'
+        labels: '{args.labels}'
+        milestone: '{args.milestone}'
+        search: '{args.search}'
+        wip: '{args.wip}'
+        created_after: '{args.created_after}'
+        updated_after: '{args.updated_after}'
+        per_page: '{args.per_page}'
+        order_by: '{args.order_by}'
+        sort: '{args.sort}'
 
   list_my_todos:
     description: |
