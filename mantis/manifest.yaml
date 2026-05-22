@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.14.0"
+version: "0.14.1"
 author: forge
 category: connector
 mode: browser-side
@@ -425,6 +425,19 @@ tools:
           separate for multi-value. Forge first tries the standard
           `source` URL param; if your install uses a custom field id
           instead (custom_field_N), pass that via `extra_params`.
+        required: false
+      filter_form_mapping:
+        type: object
+        label: |
+          Per-call override for the auto-detected filter-form mapping
+          (heavily customized Mantis installs). Maps a logical filter
+          name to the `<input name="show_<X>">` marker name on your
+          filter page. Inspect via DevTools on view_all_bug_page.php.
+          Example:
+            { "source": "reportsource", "keyword": "key" }
+          Forge picks the marker's adjacent multicheckbox[] select.
+          Use the `_filter_diagnostics._form_applied` field in the
+          response to confirm the override hit.
         required: false
       extra_params:
         type: object
@@ -873,10 +886,23 @@ tools:
         return matched;
       }
 
-      // User's optional override: settings.filter_form_mapping is a
-      // dict like { "source": "reportsource", "keyword": "key" } that
+      // User's optional override: a dict like
+      //   { "source": "reportsource", "keyword": "key" }
       // tells us which marker name to use for each logical filter.
-      const userOverrides = (settings?.filter_form_mapping || {});
+      // Browser scripts only see `args` (not `settings`), so users
+      // pass overrides per-call via args.filter_form_mapping. A
+      // `settings` global may exist on future runners — try it
+      // defensively so when we add bridge-level injection later this
+      // just works.
+      let userOverrides = {};
+      try {
+        if (typeof settings !== 'undefined' && settings && settings.filter_form_mapping) {
+          userOverrides = settings.filter_form_mapping;
+        }
+      } catch (e) { /* settings undefined — ignore */ }
+      if (args.filter_form_mapping && typeof args.filter_form_mapping === 'object') {
+        userOverrides = { ...userOverrides, ...args.filter_form_mapping };
+      }
       function getFilterSelect(want) {
         const key = String(want).toLowerCase();
         // Try user override → auto-mapped marker → category-label
