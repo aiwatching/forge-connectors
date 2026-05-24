@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.18.2"
+version: "0.19.0"
 author: forge
 category: connector
 mode: browser-side
@@ -59,11 +59,13 @@ tools:
       status:
         type: select
         label: Status filter (client-side)
+        description: "Status group filter (open=non-resolved, closed=resolved+closed, all=no filter)."
         options: ["open", "closed", "all"]
         default: "open"
       limit:
         type: number
         label: Max results
+        description: "Maximum rows to return after client-side filtering."
         default: 50
     returns: "{ bugs: [...], total, rawCount, _page, _columnsDetected }"
     page:
@@ -158,6 +160,7 @@ tools:
       bug_id:
         type: number
         label: Bug ID
+        description: "Mantis bug numeric id (e.g. 1213844)."
         required: true
     returns: "{ id, summary, description, status, resolution, ..., notes: [{id, idx, author, date, body}, ...], history: [...] }"
     page:
@@ -348,10 +351,12 @@ tools:
     parameters:
       query:
         type: string
+        description: "Free-text search on bug summary + description (no operator syntax)."
         label: Search query (free text, matches summary + description)
         required: false
       status:
         type: string
+        description: "Mantis status name, comma list, 'open' (all <80), or 'all' (no filter)."
         label: |
           Status filter. Accepts a single name or comma list:
             new, feedback, acknowledged, confirmed, assigned,
@@ -362,6 +367,7 @@ tools:
         default: "open"
       project_id:
         type: number
+        description: "Mantis internal numeric project id (from list_projects). Sets PHP-session current project."
         label: |
           Mantis INTERNAL numeric project id (NOT the "#N" prefix shown
           in the picker — those are display labels). Call `list_projects`
@@ -382,6 +388,7 @@ tools:
         required: false
       project_name:
         type: string
+        description: "Human-readable project name (case-insensitive); resolved against the project switcher options."
         label: |
           Human-readable project name (case-insensitive). Resolved
           against the top-right project-switcher options at run time —
@@ -394,6 +401,7 @@ tools:
         required: false
       fix_schedule:
         type: string
+        description: "Fix Schedule custom field value (e.g. '7.6.7'); maps to Mantis search_fixforecast URL param."
         label: |
           Fix Schedule custom field (e.g. "7.6.7"). Case-insensitive
           substring match. Walks Mantis pagination until `limit` matches
@@ -401,6 +409,7 @@ tools:
         required: false
       assignee:
         type: string
+        description: "Assignee filter — username, full name, or numeric user id. Resolves to handler_id."
         label: |
           Assignee — accepts username ("jdoe"), full name ("Jane Doe"),
           or numeric user id ("8806"). Looked up via the filter form's
@@ -411,11 +420,13 @@ tools:
         required: false
       reporter:
         type: string
+        description: "Reporter filter — username, full name, or numeric user id. Resolves to reporter_id."
         label: |
           Reporter — same matching as assignee. Resolves to reporter_id.
         required: false
       qa_assignee:
         type: string
+        description: "QA assignee filter — username, full name, or numeric user id. Resolves to qa_assignee_id."
         label: |
           QA Assignee — same matching as assignee. Resolves to
           qa_assignee_id (treated as a first-class field on customized
@@ -424,6 +435,7 @@ tools:
         required: false
       keyword:
         type: string
+        description: "Keywords filter — comma-separate for OR (e.g. 'regression,security')."
         label: |
           Mantis Keywords filter (Keyword column on the bug row). Comma-
           separate for OR semantics (Mantis's filter form treats this
@@ -432,6 +444,7 @@ tools:
         required: false
       source:
         type: string
+        description: "Source field filter (e.g. 'QA', 'Customer', 'Internal'); comma-separate for multi-value."
         label: |
           Mantis Source field filter (the "Source" column shown on
           search results — e.g. "QA", "Customer", "Internal"). Comma-
@@ -441,6 +454,7 @@ tools:
         required: false
       severity:
         type: string
+        description: "Severity filter — comma list of names ('major'), ids ('60'), or Fortinet S-codes ('S1,S2')."
         label: |
           Severity filter — comma-separated. Accepts human names OR
           numeric ids OR Fortinet S-codes:
@@ -450,6 +464,7 @@ tools:
         required: false
       resolution:
         type: string
+        description: "Resolution filter — comma list of names ('fixed,duplicate') or numeric ids ('20,60')."
         label: |
           Resolution filter — accepts human names OR numeric ids.
           Comma-separated for multi-value (matches ANY of them).
@@ -459,6 +474,7 @@ tools:
         required: false
       filter_form_mapping:
         type: object
+        description: "Per-call override map of logical filter name → show_<X> marker (e.g. {source: reportsource})."
         label: |
           Per-call override for the auto-detected filter-form mapping
           (heavily customized Mantis installs). Maps a logical filter
@@ -472,6 +488,7 @@ tools:
         required: false
       extra_params:
         type: object
+        description: "Extra Mantis filter URL params (e.g. {bug_type: 'Regression', custom_field_5: 'X'})."
         label: |
           Raw Mantis filter URL params. Useful for install-specific custom
           fields we don't model directly. Examples (your install may have
@@ -491,6 +508,7 @@ tools:
         required: false
       limit:
         type: number
+        description: "Max matching bugs to return; the scan walks pagination until reached or cap hit."
         default: 25
     returns: "{ bugs: [{id, summary, status, priority, severity, reporter, assignee, qa_assignee, fix_schedule, …}], total (returned), total_matching (server-side total across all pages, from 'Viewing Bugs (a - b / N)'), rawCount, scanned, pages_walked, query, status, project_id, fix_schedule, assignee, reporter, qa_assignee, _filter_url, _page }"
     page:
@@ -1336,6 +1354,7 @@ tools:
       bug_id:
         type: number
         label: Bug ID
+        description: "Mantis bug numeric id whose attachments you want listed."
         required: true
     returns: "{ attachments: [{ file_id, filename, size, uploaded_at, download_url }], total }"
     page:
@@ -1396,10 +1415,12 @@ tools:
       file_id:
         type: number
         label: File ID (from list_attachments)
+        description: "Attachment file_id from list_attachments — used in file_download.php?file_id=<N>."
         required: true
       max_size_bytes:
         type: number
         label: "Max size — files larger than this are SKIPPED (returns { skipped: true, size })"
+        description: "Skip download if HEAD reports size above this many bytes (default 5 MB)."
         default: 5242880
     returns: "{ filename, mime, size, content_b64, skipped? }"
     page:
@@ -1444,10 +1465,12 @@ tools:
       bug_id:
         type: number
         label: Bug ID
+        description: "Mantis bug numeric id to comment on."
         required: true
       text:
         type: string
         label: Comment text
+        description: "Note body; sent as bugnote_text to bugnote_add.php."
         required: true
     returns: "{ ok, status, finalUrl, success }"
     page:
@@ -1490,16 +1513,19 @@ tools:
       bug_id:
         type: number
         label: Bug ID
+        description: "Mantis bug numeric id to update."
         required: true
       status:
         type: string
         label: New status
+        description: "New status — name ('feedback', 'resolved') or numeric id (10/20/.../80/90)."
         help: |
           One of: new, feedback, acknowledged, confirmed, assigned,
           resolved, closed. Or a numeric status_id (10/20/30/40/50/80/90).
       resolution:
         type: string
         label: New resolution
+        description: "New resolution — name ('fixed', 'duplicate') or numeric id (10–90)."
         help: |
           One of: open, fixed, reopened, unable_to_reproduce, not_fixable,
           duplicate, not_a_bug, suspended, wont_fix. Or numeric (10/20/30/
@@ -1507,6 +1533,7 @@ tools:
       handler:
         type: string
         label: Assignee (username or numeric id)
+        description: "New assignee — username or numeric user id; resolved against the handler_id select."
     returns: "{ ok, status, finalUrl, applied: {...} }"
     page:
       url: "{base_url}/bug_update_page.php?bug_id={args.bug_id}"
