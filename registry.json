@@ -6,7 +6,7 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.18.2",
+      "version": "0.19.0",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
       "min_forge_version": "0.8.0"
@@ -15,7 +15,7 @@
       "id": "gitlab",
       "name": "GitLab",
       "icon": "\ud83e\udd8a",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
       "min_forge_version": "0.8.0"
