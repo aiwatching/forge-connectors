@@ -21,6 +21,20 @@ registry.json                # listing of all connectors (light)
 Override the base URL via `settings.connectorsRepoUrl` in Forge if you
 want to host a private fork.
 
+## Bumping a connector
+
+When you change a manifest, bump its `version:` AND keep `registry.json`
+in sync. The helper does the second step for you:
+
+```bash
+python3 tools/build_registry.py           # rebuild registry.json from manifests
+python3 tools/build_registry.py --check   # CI gate — exits non-zero on drift
+```
+
+The CI workflow (`.github/workflows/registry-check.yml`) runs the
+`--check` form on every push and PR, so a stale `registry.json` fails
+the build before it gets to a Forge user's marketplace.
+
 ## Manifest schema
 
 See [`docs/Connector-DeclarativeExtract-Spec.md`](https://github.com/aiwatching/forge/blob/main/docs/Connector-DeclarativeExtract-Spec.md)

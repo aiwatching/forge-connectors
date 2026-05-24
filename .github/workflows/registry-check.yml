@@ -1,0 +1,18 @@
+name: registry-check
+on:
+  push:
+  pull_request:
+
+# Fails CI when registry.json's version/name fields drift from any
+# connector's manifest.yaml. Bumping a manifest without bumping the
+# matching registry entry silently breaks the Forge marketplace sync
+# UI — this gate makes that class of bug impossible.
+jobs:
+  registry-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 tools/build_registry.py --check
