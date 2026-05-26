@@ -1,10 +1,15 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.19.0"
+version: "0.20.0"
 author: forge
 category: connector
 mode: browser-side
+# Open a fresh background tab per call + close on completion. Avoids
+# hijacking the user's open Mantis tab — important since Mantis is hit
+# many times per pipeline run (fetch-bug-details, mark-fixed,
+# add_comment, …). Slight per-call cost (~5s cold tab load), invisible.
+tab_strategy: ephemeral
 description: |
   Read + comment on MantisBT bugs from the user's logged-in browser session.
 
