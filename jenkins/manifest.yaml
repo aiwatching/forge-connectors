@@ -1,0 +1,355 @@
+id: jenkins
+name: Jenkins
+icon: 🔧
+version: "0.1.0"
+author: forge
+category: connector
+mode: server-side
+description: |
+  Jenkins REST API connector — trigger builds, monitor status, fetch
+  console logs and artifacts. All requests run inside Forge (no browser
+  tab needed) so it works from chat, jobs, and pipelines.
+
+  Supports folder-nested jobs via slash-separated `job/` paths:
+    job_path: "job/team-x/job/deploy-app"
+
+  Supports multiple Jenkins servers in one install via
+  `settings.instances` — refer to one by `instance: "prod"` when calling
+  a tool, defaults to the first.
+
+settings:
+  instances:
+    type: json
+    label: Jenkins instances
+    description: |
+      Array of `{ name, base_url, username, api_token }`. The `name`
+      field is how you reference an instance from a tool call
+      (`instance: "prod"`). The first entry is the default.
+
+      Get an api_token at <base_url>/user/<your-username>/configure →
+      "API Token" → Add new Token → Generate.
+
+      Example:
+        [
+          {
+            "name": "prod",
+            "base_url": "https://jenkins.company.com",
+            "username": "zliu",
+            "api_token": "11abcdef..."
+          },
+          {
+            "name": "staging",
+            "base_url": "https://staging-jenkins.company.com",
+            "username": "zliu",
+            "api_token": "22fedcba..."
+          }
+        ]
+    required: true
+
+auth:
+  type: basic
+  username: '{settings.username}'
+  password: '{settings.api_token}'
+
+test:
+  description: "GET /api/json — verifies the first instance's base_url + credentials."
+  request:
+    method: GET
+    url: "{settings.base_url}/api/json?tree=mode,nodeName,numExecutors"
+  ok_template: "Connected · mode={{mode}} · node={{nodeName}} · executors={{numExecutors}}"
+  timeout_ms: 15000
+
+tools:
+  list_jobs:
+    description: |
+      List jobs at the Jenkins root, or inside a folder. Returns each
+      child's name, color (build status), _class, and url.
+
+      Colors: blue = last build SUCCESS, red = FAILURE, yellow = UNSTABLE,
+      aborted = ABORTED, notbuilt = never built, *_anime = currently building.
+      _class `...Folder` means this entry is a folder you can drill into.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      folder_path:
+        type: string
+        url_encoding: none
+        description: |
+          Optional folder path. Empty = root. For folders use the
+          pre-formatted "job/" notation: "job/team-x", "job/team-x/job/sub".
+        default: ""
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.folder_path}/api/json?tree=jobs[name,color,_class,url]'
+    returns: "{ jobs: [ { name, color, _class, url } ] }"
+
+  get_job:
+    description: |
+      Fetch a single job's metadata: description, buildable, color,
+      lastBuild, lastSuccessfulBuild, healthReport. Use this to find
+      the most recent build number before fetching its console.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: |
+          Full job path with "job/" prefixes:
+            "job/deploy-app"
+            "job/team-x/job/deploy-app"
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/api/json'
+    returns: "{ name, description, buildable, color, lastBuild, lastSuccessfulBuild, healthReport, ... }"
+
+  get_job_params:
+    description: |
+      Fetch the parameter definitions for a job. Use this BEFORE
+      `trigger_build` so you know which params the job accepts, their
+      types (StringParameterDefinition, BooleanParameterDefinition,
+      ChoiceParameterDefinition, ...), and their default values.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/api/json?tree=property[parameterDefinitions[name,type,description,defaultParameterValue[value],choices]]'
+    returns: |
+      { property: [ { parameterDefinitions: [
+        { name, type, description, defaultParameterValue: { value }, choices? }
+      ] } ] }
+
+  get_next_build_number:
+    description: |
+      Get the build number Jenkins will assign to the next triggered
+      build. Useful so you can predict the build # before calling
+      `trigger_build`, then poll `get_build` on that number.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/api/json?tree=nextBuildNumber'
+    returns: '{ nextBuildNumber: number }'
+
+  trigger_build:
+    description: |
+      Trigger a job build. Supply `params` as an object of build-parameter
+      key/values (use `get_job_params` first to know what keys the job
+      accepts). Jenkins responds 201 with an empty body — the actual
+      build number isn't returned. To track the build:
+        1. call `get_next_build_number` BEFORE this to learn the # that
+           will be assigned, then poll `get_build` on that number, OR
+        2. call `get_queue` after to find the queue item, then follow
+           `executable.number` once Jenkins assigns one.
+    protocol: http
+    destructive: true
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      params:
+        type: json
+        description: |
+          Flat object of build parameters, e.g.:
+            { "BRANCH": "main", "ENV": "staging", "DEPLOY": true }
+          Keys must match the job's parameterDefinitions.
+        default: {}
+    request:
+      method: POST
+      url: '{settings.base_url}/{args.job_path}/buildWithParameters'
+      body_form: '{args.params}'
+    returns: 'HTTP 201 Created (empty body — use get_queue or get_build to track)'
+
+  get_queue:
+    description: |
+      List items currently waiting in the Jenkins build queue. Useful
+      right after `trigger_build` to find your queued item — match by
+      `task.url` or `task.name`. Once `executable` is populated the
+      build has started and `executable.number` is its build number.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+    request:
+      method: GET
+      url: '{settings.base_url}/queue/api/json?tree=items[id,inQueueSince,why,stuck,blocked,buildable,task[name,url],executable[number,url]]'
+    returns: '{ items: [ { id, why, task: { name, url }, executable?: { number } } ] }'
+
+  get_queue_item:
+    description: |
+      Fetch a single queue item by id. Returns the same shape as get_queue
+      entries — check `executable.number` to learn the build number once
+      Jenkins assigns it.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      queue_id:
+        type: number
+        required: true
+        description: 'Queue item id from get_queue.'
+    request:
+      method: GET
+      url: '{settings.base_url}/queue/item/{args.queue_id}/api/json'
+    returns: '{ id, why, task: { name, url }, executable?: { number, url } }'
+
+  get_build:
+    description: |
+      Fetch a build's status. `building: true` = still running, `false`
+      = finished and `result` is one of SUCCESS / FAILURE / UNSTABLE /
+      ABORTED. Also returns duration, estimatedDuration, timestamp.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      build_number:
+        type: number
+        required: true
+        description: 'Build number (or use "lastBuild" / "lastSuccessfulBuild" string aliases).'
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/{args.build_number}/api/json'
+    returns: '{ id, number, building, result, duration, estimatedDuration, timestamp, url, ... }'
+
+  get_console:
+    description: |
+      Fetch the console (stdout+stderr) of a build. Plain-text response.
+      The full log can be very large — pass `start` (byte offset) to fetch
+      only what's new since your last call (e.g. for tailing a running
+      build); start=0 returns the whole log.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      build_number:
+        type: number
+        required: true
+        description: 'Build number to fetch console output for.'
+      start:
+        type: number
+        description: 'Byte offset to start from. Default 0 (whole log).'
+        default: 0
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/{args.build_number}/logText/progressiveText?start={args.start}'
+    returns: 'Plain text log. Response headers X-Text-Size + X-More-Data carry tailing info but Forge only surfaces the body.'
+
+  list_artifacts:
+    description: |
+      List the artifact files produced by a build. Each entry has
+      `fileName` (basename) and `relativePath` (use as `artifact_path`
+      for `get_artifact`).
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      build_number:
+        type: number
+        required: true
+        description: 'Build number.'
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/{args.build_number}/api/json?tree=artifacts[fileName,relativePath,displayPath]'
+    returns: '{ artifacts: [ { fileName, relativePath, displayPath } ] }'
+
+  get_artifact:
+    description: |
+      Download an artifact file's content. Path is the `relativePath`
+      from `list_artifacts`. Returns the raw file body (truncated to
+      8KB by Forge — large binaries should be fetched elsewhere).
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      build_number:
+        type: number
+        required: true
+        description: 'Build number.'
+      artifact_path:
+        type: string
+        required: true
+        url_encoding: path_segments
+        description: |
+          relativePath from list_artifacts. Segments URL-encoded
+          individually; nested paths like "reports/test/results.xml"
+          stay traversable.
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/{args.build_number}/artifact/{args.artifact_path}'
+    returns: 'Raw artifact bytes (text-safe truncation 8KB).'
+
+  stop_build:
+    description: |
+      Stop a running build. Jenkins replies 302 (redirect to job page).
+      No-op if the build already finished.
+    protocol: http
+    destructive: true
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes.'
+      build_number:
+        type: number
+        required: true
+        description: 'Build number to stop.'
+    request:
+      method: POST
+      url: '{settings.base_url}/{args.job_path}/{args.build_number}/stop'
+    returns: 'Empty body (302 Found on success).'

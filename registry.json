@@ -1,7 +1,16 @@
 {
   "version": 1,
-  "updated_at": "2026-05-26T22:53:05Z",
+  "updated_at": "2026-05-28T00:00:00Z",
   "connectors": [
+    {
+      "id": "jenkins",
+      "name": "Jenkins",
+      "icon": "🔧",
+      "version": "0.1.0",
+      "author": "forge",
+      "description": "Jenkins REST API connector — trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
+      "min_forge_version": "0.9.17"
+    },
     {
       "id": "mantis",
       "name": "MantisBT",
