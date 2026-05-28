@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.0"
+version: "0.1.1"
 author: forge
 category: connector
 mode: server-side
@@ -19,32 +19,33 @@ description: |
 
 settings:
   instances:
-    type: json
+    type: instances
     label: Jenkins instances
     description: |
-      Array of `{ name, base_url, username, api_token }`. The `name`
-      field is how you reference an instance from a tool call
-      (`instance: "prod"`). The first entry is the default.
-
+      Add one row per Jenkins server. Reference one from any tool by
+      passing `instance: "<name>"`; the first entry is the default.
       Get an api_token at <base_url>/user/<your-username>/configure →
       "API Token" → Add new Token → Generate.
-
-      Example:
-        [
-          {
-            "name": "prod",
-            "base_url": "https://jenkins.company.com",
-            "username": "zliu",
-            "api_token": "11abcdef..."
-          },
-          {
-            "name": "staging",
-            "base_url": "https://staging-jenkins.company.com",
-            "username": "zliu",
-            "api_token": "22fedcba..."
-          }
-        ]
     required: true
+    fields:
+      name:
+        type: string
+        label: Name
+        required: true
+        description: "Short identifier (e.g. prod, staging, autotest)."
+      base_url:
+        type: string
+        label: Base URL
+        required: true
+        description: "e.g. https://jenkins.company.com (no trailing slash)."
+      username:
+        type: string
+        label: Username
+        required: true
+      api_token:
+        type: secret
+        label: API token
+        required: true
 
 auth:
   type: basic
