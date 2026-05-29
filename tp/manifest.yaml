@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.0"
+version: "0.4.1"
 author: forge
 category: connector
 mode: browser-side
@@ -387,18 +387,13 @@ tools:
         created: json,
       };
 
-  # ─────────── add_comment (destructive — UNVERIFIED endpoint) ───────────
+  # ─────────── add_comment (destructive) ───────────
   add_comment:
     description: |
-      Add a comment to an NFR. Comment body is HTML (matches the
-      weekly status convention; plain text gets wrapped in <p>).
-
-      Endpoint NOT directly verified during connector dev — inferred
-      from the read endpoint /adc/get_nfr_comment/{id} + the
-      add_nfr_weekly_status convention. If you get a 404, the actual
-      path may be /adc/add_nfr_comment/{id}/ or similar — open an
-      NFR, add a comment via the UI, watch network panel, and bump
-      this connector.
+      Add a comment to an NFR. Verified endpoint:
+      POST /adc/add_nfr_comment (no trailing slash) with JSON
+      { id, comment, user, action: "add" }. Comment is plain text
+      (the upstream UI wraps via Quill but the API accepts raw).
     destructive: true
     parameters:
       nfr_id:
@@ -408,7 +403,7 @@ tools:
       comment:
         type: string
         required: true
-        description: "Comment text. Plain text gets wrapped in <p>; HTML preserved."
+        description: "Comment text."
     page:
       url: "{base_url}/nfr-detail?id={args.nfr_id}"
       on_target: "/nfr-detail"
@@ -423,46 +418,62 @@ tools:
       } catch {}
       if (!userEmail) return { _error: 'Could not extract user email from JWT.' };
 
-      let msg = String(args.comment || '');
-      if (msg && !/<[a-z][^>]*>/i.test(msg)) msg = `<p>${msg.replace(/\n/g, '</p><p>')}</p>`;
-
       const body = JSON.stringify({
-        nfr_id: Number(args.nfr_id),
-        comment: msg,
         user: userEmail,
+        comment: String(args.comment || ''),
+        id: Number(args.nfr_id),
+        action: 'add',
       });
 
-      // Primary guess — same shape as add_nfr_weekly_status
-      let r = await fetch(`${apiBase}/adc/add_nfr_comment/`, {
+      const r = await fetch(`${apiBase}/adc/add_nfr_comment`, {
         method: 'POST',
         headers: {
           'Authorization': `JWT ${jwt}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/plain, */*',
+          'Content-Type': 'application/json;charset=UTF-8',
         },
         credentials: 'include',
         body,
       });
-      // Fallback path — id in URL, common Django REST idiom
-      if (r.status === 404) {
-        r = await fetch(`${apiBase}/adc/add_nfr_comment/${args.nfr_id}/`, {
-          method: 'POST',
-          headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body,
-        });
-      }
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
       if (!r.ok) {
         const t = await r.text();
-        return {
-          _error: `API ${r.status}`,
-          body: t.slice(0, 500),
-          _hint: 'Endpoint may not match — open the NFR in browser, add a comment, watch network panel, then update manifest.',
-        };
+        return { _error: `API ${r.status}`, body: t.slice(0, 500) };
       }
       const json = await r.json().catch(() => ({}));
       return { ok: true, nfr_id: Number(args.nfr_id), created: json };
+
+  # ─────────── delete_weekly_status (destructive) ───────────
+  delete_weekly_status:
+    description: |
+      Delete a specific weekly status entry by its weekly_status id
+      (NOT the NFR id — get the id from get_nfr's weekly_status[].id
+      field). Verified endpoint: DELETE /adc/delete_nfr_weekly_status/{id}.
+    destructive: true
+    parameters:
+      weekly_status_id:
+        type: number
+        required: true
+        description: "Weekly status entry id (from get_nfr().weekly_status[].id)."
+    page:
+      url: "{base_url}/nfr"
+      on_target: "/"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const id = Number(args.weekly_status_id);
+      const r = await fetch(`${apiBase}/adc/delete_nfr_weekly_status/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' },
+        credentials: 'include',
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) {
+        const t = await r.text();
+        return { _error: `API ${r.status}`, body: t.slice(0, 300) };
+      }
+      return { ok: true, deleted_weekly_status_id: id };
 
   # ─────────── edit_nfr_field (destructive) ───────────
   edit_nfr_field:
