@@ -3,6 +3,15 @@
   "updated_at": "2026-05-28T00:00:00Z",
   "connectors": [
     {
+      "id": "tp",
+      "name": "FortiNAC Test Platform",
+      "icon": "🧪",
+      "version": "0.3.0",
+      "author": "forge",
+      "description": "FortiNAC TP browser connector — read NFRs (CA & NCM / Device Integration / Agent modules) using your logged-in session. Automation module ships later.",
+      "min_forge_version": "0.9.17"
+    },
+    {
       "id": "jenkins",
       "name": "Jenkins",
       "icon": "🔧",

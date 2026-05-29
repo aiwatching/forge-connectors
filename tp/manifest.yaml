@@ -1,0 +1,306 @@
+id: tp
+name: FortiNAC Test Platform
+icon: 🧪
+version: "0.3.0"
+author: forge
+category: connector
+mode: browser-side
+description: |
+  FortiNAC Test Platform (TP) — browser-side connector reusing the
+  user's logged-in session. Calls TP's internal REST API directly
+  using the JWT held in localStorage (no DOM scraping, no token in
+  Forge settings — re-login refreshes automatically).
+
+  v0.3 (read-only):
+    - list_nfrs              (CA & NCM module)
+    - list_device_integration
+    - list_agent
+    - get_nfr                (single NFR full detail + weekly status + history + comments)
+    - list_releases          (valid release tags per module)
+
+  Destructive ops (update_weekly_status, add_comment, edit_nfr) need
+  one round of network capture from the user clicking those actions —
+  added in v0.4.
+
+  Automation module (lab lock, testcase run, device upgrade, test
+  results) ships in a later version (likely as a separate
+  `tp-automation` connector when its API stabilises).
+
+settings:
+  base_url:
+    type: string
+    label: TP base URL
+    description: "e.g. https://nac-tp.fortinet-us.com"
+    required: true
+    default: "https://nac-tp.fortinet-us.com"
+  api_base_url:
+    type: string
+    label: TP API base URL
+    description: "TP's internal REST API host. NAC TP uses port 8000."
+    required: true
+    default: "https://nac-tp.fortinet-us.com:8000"
+  username:
+    type: string
+    label: Your TP username
+    description: |
+      Used by 'owner_filter: me' to find NFRs you own across any of
+      the assignee fields. Match the name as it appears in TP
+      (e.g. 'Ryan Sun' — full name, not the email prefix).
+    required: true
+
+host_match: "{base_url}/*"
+login_redirect: "/login"
+runner: main
+tab_strategy: reuse
+
+# ─── Shared script preamble (injected via {settings.*} expansion) ──
+# Each tool's script duplicates the JWT lookup + fetch helper. Could
+# be DRY'd via a shared file later — manifests don't support imports.
+
+tools:
+
+  # ─────────── list_nfrs (CA & NCM) ───────────
+  list_nfrs:
+    description: |
+      List NFRs from the CA & NCM module via TP's REST API. Returns the
+      full set for the given release in one call (no pagination).
+
+      `owner_filter` searches nfr_owner / pd_assignee / backend_assignee /
+      frontend_assignee / at_assignee / qa_assignee. Special value 'me'
+      resolves to settings.username.
+
+      `verbose: false` (default) → slim 14-field view (LLM-friendly).
+      `verbose: true` → full ~50-field record per NFR.
+    parameters:
+      release:
+        type: string
+        default: "all"
+        description: "Release filter. 'all' = every release; or an exact tag like '7.6.7' / '7.4.0'. Partial like '7.6' returns nothing — must be exact (call list_releases to see valid tags)."
+      owner_filter:
+        type: string
+        description: "Filter rows where any owner/assignee column contains this string. 'me' = settings.username. Empty = no filter."
+      verbose:
+        type: boolean
+        default: false
+        description: "false = slim view. true = full payload (incl. dates, doc links, bugs list)."
+    page:
+      url: "{base_url}/nfr"
+      on_target: "/nfr"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP. Open the TP tab and sign in, then retry.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const url = `${apiBase}/adc/get_nfr_list/${encodeURIComponent(args.release || 'all')}`;
+      const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
+      if (!r.ok) return { _error: `API ${r.status}`, url };
+      const all = await r.json();
+      if (!Array.isArray(all)) return { _error: 'API did not return an array', url };
+      const myName = '{settings.username}';
+      let effOwner = (args.owner_filter || '').trim();
+      if (effOwner === 'me') effOwner = myName;
+      let filtered = all;
+      if (effOwner) {
+        const q = effOwner.toLowerCase();
+        const matchFields = ['nfr_owner', 'pd_assignee', 'backend_assignee', 'frontend_assignee', 'at_assignee', 'qa_assignee'];
+        filtered = all.filter(r => matchFields.some(f => (r[f] || '').toLowerCase().includes(q)));
+      }
+      const slim = (r) => ({
+        id: r.id, subject: r.subject, release: r.release, priority: r.priority,
+        category: r.category, source: r.source, status: r.status, progress: r.progress,
+        nfr_owner: r.nfr_owner, qa_assignee: r.qa_assignee, backend_assignee: r.backend_assignee,
+        bugs: r.bugs ? { total: r.bugs.total, assigned: r.bugs.assigned } : null,
+        pmdb: r.pmdb, mantis_nfr: r.mantis_nfr,
+        detail_url: `${location.origin}/nfr-detail?id=${r.id}`,
+      });
+      const rows = args.verbose ? filtered : filtered.map(slim);
+      return { release: args.release || 'all', owner_filter: effOwner || null, total: all.length, returned: rows.length, verbose: !!args.verbose, rows };
+
+  # ─────────── list_device_integration ───────────
+  list_device_integration:
+    description: |
+      List items from the Device Integration module. Same shape as
+      list_nfrs (owner_filter / verbose) — different upstream module.
+      Useful when the user asks about device-integration NFRs.
+    parameters:
+      release:
+        type: string
+        default: "all"
+        description: "Release tag (e.g. '7.6.7') or 'all'. Call list_releases module='Device Integration' to see valid tags."
+      owner_filter:
+        type: string
+        description: "Same as list_nfrs. 'me' = settings.username."
+      verbose:
+        type: boolean
+        default: false
+    page:
+      url: "{base_url}/device-integration"
+      on_target: "/device-integration"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Device%20Integration`;
+      const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
+      if (!r.ok) return { _error: `API ${r.status}`, url };
+      const all = await r.json();
+      if (!Array.isArray(all)) return { _error: 'API did not return an array', url };
+      const myName = '{settings.username}';
+      let effOwner = (args.owner_filter || '').trim();
+      if (effOwner === 'me') effOwner = myName;
+      let filtered = all;
+      if (effOwner) {
+        const q = effOwner.toLowerCase();
+        const matchFields = ['nfr_owner', 'pd_assignee', 'backend_assignee', 'frontend_assignee', 'at_assignee', 'qa_assignee'];
+        filtered = all.filter(r => matchFields.some(f => (r[f] || '').toLowerCase().includes(q)));
+      }
+      const slim = (r) => ({
+        id: r.id, subject: r.subject, release: r.release, priority: r.priority,
+        category: r.category, source: r.source, status: r.status, progress: r.progress,
+        nfr_owner: r.nfr_owner, qa_assignee: r.qa_assignee,
+        bugs: r.bugs ? { total: r.bugs.total, assigned: r.bugs.assigned } : null,
+        pmdb: r.pmdb, mantis_nfr: r.mantis_nfr,
+        detail_url: `${location.origin}/nfr-detail?id=${r.id}`,
+      });
+      const rows = args.verbose ? filtered : filtered.map(slim);
+      return { module: 'Device Integration', release: args.release || 'all', owner_filter: effOwner || null, total: all.length, returned: rows.length, verbose: !!args.verbose, rows };
+
+  # ─────────── list_agent ───────────
+  list_agent:
+    description: |
+      List items from the Agent module. Same shape as list_nfrs.
+    parameters:
+      release:
+        type: string
+        default: "all"
+        description: "Release tag or 'all'. Call list_releases module='Agent' to see valid tags."
+      owner_filter:
+        type: string
+        description: "Same as list_nfrs. 'me' = settings.username."
+      verbose:
+        type: boolean
+        default: false
+    page:
+      url: "{base_url}/agent"
+      on_target: "/agent"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Agent`;
+      const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
+      if (!r.ok) return { _error: `API ${r.status}`, url };
+      const all = await r.json();
+      if (!Array.isArray(all)) return { _error: 'API did not return an array', url };
+      const myName = '{settings.username}';
+      let effOwner = (args.owner_filter || '').trim();
+      if (effOwner === 'me') effOwner = myName;
+      let filtered = all;
+      if (effOwner) {
+        const q = effOwner.toLowerCase();
+        const matchFields = ['nfr_owner', 'pd_assignee', 'backend_assignee', 'frontend_assignee', 'at_assignee', 'qa_assignee'];
+        filtered = all.filter(r => matchFields.some(f => (r[f] || '').toLowerCase().includes(q)));
+      }
+      const slim = (r) => ({
+        id: r.id, subject: r.subject, release: r.release, priority: r.priority,
+        category: r.category, source: r.source, status: r.status, progress: r.progress,
+        nfr_owner: r.nfr_owner, qa_assignee: r.qa_assignee,
+        bugs: r.bugs ? { total: r.bugs.total, assigned: r.bugs.assigned } : null,
+        pmdb: r.pmdb, mantis_nfr: r.mantis_nfr,
+        detail_url: `${location.origin}/nfr-detail?id=${r.id}`,
+      });
+      const rows = args.verbose ? filtered : filtered.map(slim);
+      return { module: 'Agent', release: args.release || 'all', owner_filter: effOwner || null, total: all.length, returned: rows.length, verbose: !!args.verbose, rows };
+
+  # ─────────── get_nfr (full detail) ───────────
+  get_nfr:
+    description: |
+      Fetch a single NFR with everything: full record fields, weekly
+      status history, change history, and comments. Use when the
+      user asks "what's the latest on NFR <id>" or wants to see
+      progress notes.
+
+      Pass `include` to slim the response — accepts a CSV of:
+      detail, weekly, history, comments. Default: all four.
+    parameters:
+      id:
+        type: number
+        required: true
+        description: "NFR id (the number in subject_url / detail page URL)."
+      include:
+        type: string
+        default: "detail,weekly,history,comments"
+        description: "CSV of sections to fetch. Default fetches everything. Use 'detail,weekly' to skip history+comments."
+      weekly_limit:
+        type: number
+        default: 10
+        description: "Cap the number of weekly status entries returned (newest first). Set 0 for no cap."
+    page:
+      url: "{base_url}/nfr-detail?id={args.id}"
+      on_target: "/nfr-detail"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
+      const id = args.id;
+      if (id == null) return { _error: 'id is required' };
+      const include = String(args.include || 'detail,weekly,history,comments').split(',').map(s => s.trim()).filter(Boolean);
+      const inc = new Set(include);
+      const get = async (path) => {
+        try {
+          const r = await fetch(`${apiBase}${path}`, { headers: hdr, credentials: 'include' });
+          if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status}` };
+          if (!r.ok) return { _error: `${r.status}`, _path: path };
+          const ct = r.headers.get('content-type') || '';
+          return ct.includes('json') ? await r.json() : (await r.text()).slice(0, 500);
+        } catch (e) { return { _error: String(e) }; }
+      };
+      const out = { id };
+      if (inc.has('detail')) out.detail = await get(`/adc/get_nfr_detail/${id}`);
+      if (inc.has('weekly')) {
+        const w = await get(`/adc/get_nfr_weekly_status/${id}`);
+        if (Array.isArray(w)) {
+          const cap = Number(args.weekly_limit ?? 10);
+          out.weekly_status = cap > 0 ? w.slice(0, cap) : w;
+          out.weekly_status_total = w.length;
+        } else {
+          out.weekly_status = w;
+        }
+      }
+      if (inc.has('history')) out.history = await get(`/adc/get_nfr_history/${id}`);
+      if (inc.has('comments')) out.comments = await get(`/adc/get_nfr_comment/${id}`);
+      return out;
+
+  # ─────────── list_releases ───────────
+  list_releases:
+    description: |
+      List valid release tags for a TP module. Call before list_*
+      tools when the user doesn't know the exact release tag (TP
+      requires exact tags like '7.6.7' — '7.6' returns nothing).
+    parameters:
+      module:
+        type: select
+        options: ["NFR", "Device Integration", "Agent"]
+        default: "NFR"
+        description: "Which TP module to query release tags for."
+    page:
+      url: "{base_url}/nfr"
+      on_target: "/"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const url = `${apiBase}/adc/get_version_list/${encodeURIComponent(args.module || 'NFR')}`;
+      const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.`, url };
+      if (!r.ok) return { _error: `API ${r.status}`, url };
+      const body = await r.json();
+      return { module: args.module || 'NFR', releases: body };
+
+test:
+  description: "Opens TP and verifies the session JWT is in localStorage."
+  probe: browser
+  timeout_ms: 20000
