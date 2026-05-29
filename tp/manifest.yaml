@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.2"
+version: "0.4.3"
 author: forge
 category: connector
 mode: browser-side
@@ -48,7 +48,13 @@ settings:
 host_match: "{base_url}/*"
 login_redirect: "/login"
 runner: main
-tab_strategy: reuse
+# Always open a fresh background tab per call (closed afterwards).
+# Costs ~5-10s per call cold-load + SAML round-trip, but isolates
+# every call from whatever stale state (expired JWT, wrong route,
+# old SAML challenge) the user's existing TP tab might be in.
+# Trade-off accepted in v0.4.3 after a session where a stale tab on
+# the SSO login page made every API call return nginx 405.
+tab_strategy: ephemeral
 
 # ─── Shared script preamble (injected via {settings.*} expansion) ──
 # Each tool's script duplicates the JWT lookup + fetch helper. Could
