@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.2"
+version: "0.1.3"
 author: forge
 category: connector
 mode: server-side
@@ -50,6 +50,10 @@ settings:
         type: secret
         label: GitLab PAT (optional)
         description: "If this Jenkins instance has jobs that take GITLAB_PAT as a build parameter, paste a GitLab Personal Access Token here. Forge auto-injects it into trigger_build's form body — the LLM never sees the value. Leave empty if your jobs don't need it."
+      gitlab_token_name:
+        type: string
+        label: GitLab token name (optional)
+        description: "If your Jenkins jobs also take a GITLAB_TOKEN_NAME parameter (the label the PAT was created under in GitLab), set it here. Injected alongside GITLAB_PAT. Leave empty if your jobs don't need it."
 
 auth:
   type: basic
@@ -194,6 +198,7 @@ tools:
       # value; if gitlab_pat is empty, the key is dropped entirely.
       body_form_inject:
         GITLAB_PAT: '{settings.gitlab_pat}'
+        GITLAB_TOKEN_NAME: '{settings.gitlab_token_name}'
     returns: 'HTTP 201 Created (empty body — use get_queue or get_build to track)'
 
   get_queue:
