@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.3"
+version: "0.1.4"
 author: forge
 category: connector
 mode: server-side
@@ -49,11 +49,21 @@ settings:
       gitlab_pat:
         type: secret
         label: GitLab PAT (optional)
-        description: "If this Jenkins instance has jobs that take GITLAB_PAT as a build parameter, paste a GitLab Personal Access Token here. Forge auto-injects it into trigger_build's form body — the LLM never sees the value. Leave empty if your jobs don't need it."
+        description: "GitLab Personal Access Token that Forge auto-injects into trigger_build as a build parameter. The LLM never sees the value. Leave empty if your jobs don't need it."
+      gitlab_pat_param:
+        type: string
+        label: "Build-param name for the PAT"
+        description: "Which Jenkins build parameter receives the PAT. Defaults to GITLAB_PAT; set to whatever your job uses (e.g. TOKEN_PASSWORD)."
+        default: "GITLAB_PAT"
       gitlab_token_name:
         type: string
         label: GitLab token name (optional)
-        description: "If your Jenkins jobs also take a GITLAB_TOKEN_NAME parameter (the label the PAT was created under in GitLab), set it here. Injected alongside GITLAB_PAT. Leave empty if your jobs don't need it."
+        description: "If your job also takes a token-name / username parameter (the label the PAT was created under in GitLab, or the GitLab user the PAT belongs to), set it here. Leave empty if not needed."
+      gitlab_token_name_param:
+        type: string
+        label: "Build-param name for the token name"
+        description: "Which Jenkins build parameter receives the token name. Defaults to GITLAB_TOKEN_NAME; set to whatever your job uses (e.g. TOKEN_USER)."
+        default: "GITLAB_TOKEN_NAME"
 
 auth:
   type: basic
@@ -171,6 +181,15 @@ tools:
            will be assigned, then poll `get_build` on that number, OR
         2. call `get_queue` after to find the queue item, then follow
            `executable.number` once Jenkins assigns one.
+
+      AUTO-INJECTED PARAMS — DO NOT INCLUDE IN `params`:
+      If the selected instance has `gitlab_pat` / `gitlab_token_name`
+      configured, Forge auto-injects them under the param names set in
+      `gitlab_pat_param` / `gitlab_token_name_param` (defaults
+      GITLAB_PAT / GITLAB_TOKEN_NAME, often configured as
+      TOKEN_PASSWORD / TOKEN_USER for Fortinet jobs). The values stay
+      server-side; passing them in `params` is unnecessary and posting
+      a literal placeholder string is wrong.
     protocol: http
     destructive: true
     parameters:
@@ -196,9 +215,15 @@ tools:
       # Server-side inject: if the selected instance has gitlab_pat set,
       # Forge merges GITLAB_PAT into the form body. LLM never sees the
       # value; if gitlab_pat is empty, the key is dropped entirely.
+      # Both KEY and VALUE are templated against settings. The build-
+      # param name comes from `gitlab_pat_param` / `gitlab_token_name_param`
+      # on the selected instance so the same connector works with any
+      # Jenkins job (GITLAB_PAT, TOKEN_PASSWORD, etc.). Entries are
+      # dropped if either the param name or the value is empty after
+      # template expansion.
       body_form_inject:
-        GITLAB_PAT: '{settings.gitlab_pat}'
-        GITLAB_TOKEN_NAME: '{settings.gitlab_token_name}'
+        '{settings.gitlab_pat_param}': '{settings.gitlab_pat}'
+        '{settings.gitlab_token_name_param}': '{settings.gitlab_token_name}'
     returns: 'HTTP 201 Created (empty body — use get_queue or get_build to track)'
 
   get_queue:
