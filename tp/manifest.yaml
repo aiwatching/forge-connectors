@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.1"
+version: "0.4.2"
 author: forge
 category: connector
 mode: browser-side
@@ -86,6 +86,12 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP. Open the TP tab and sign in, then retry.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const url = `${apiBase}/adc/get_nfr_list/${encodeURIComponent(args.release || 'all')}`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
@@ -136,6 +142,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Device%20Integration`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
@@ -184,6 +199,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Agent`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
@@ -240,6 +264,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
       const id = args.id;
@@ -289,6 +322,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const url = `${apiBase}/adc/get_version_list/${encodeURIComponent(args.module || 'NFR')}`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
@@ -333,6 +375,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       // Decode JWT payload to grab the user email.
       let userEmail = '';
@@ -410,6 +461,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       let userEmail = '';
       try {
@@ -461,6 +521,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       const id = Number(args.weekly_status_id);
       const r = await fetch(`${apiBase}/adc/delete_nfr_weekly_status/${id}`, {
@@ -515,6 +584,15 @@ tools:
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
+      // Fail-fast on expired JWT — the API redirects expired auth to
+      // an HTML login page, which fetch follows opaquely and surfaces
+      // as confusing 405/HTML errors. Decode payload, check `exp`.
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) {
+          return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
+        }
+      } catch {}
       const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
       let userEmail = '';
       try {

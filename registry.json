@@ -6,7 +6,7 @@
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "author": "forge",
       "description": "FortiNAC TP browser connector — read NFRs (CA & NCM / Device Integration / Agent modules) using your logged-in session. Automation module ships later.",
       "min_forge_version": "0.9.17"
