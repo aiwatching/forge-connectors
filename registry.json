@@ -6,7 +6,7 @@
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
-      "version": "0.4.4",
+      "version": "0.4.5",
       "author": "forge",
       "description": "FortiNAC TP browser connector — read NFRs (CA & NCM / Device Integration / Agent modules) using your logged-in session. Automation module ships later.",
       "min_forge_version": "0.9.17"
@@ -23,7 +23,7 @@
     {
       "id": "mantis",
       "name": "MantisBT",
-      "icon": "\ud83d\udc1e",
+      "icon": "🐞",
       "version": "0.20.0",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
@@ -32,7 +32,7 @@
     {
       "id": "gitlab",
       "name": "GitLab",
-      "icon": "\ud83e\udd8a",
+      "icon": "🦊",
       "version": "1.7.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
@@ -41,7 +41,7 @@
     {
       "id": "teams",
       "name": "Microsoft Teams",
-      "icon": "\ud83d\udcac",
+      "icon": "💬",
       "version": "0.9.0",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
@@ -50,7 +50,7 @@
     {
       "id": "pmdb",
       "name": "PMDB",
-      "icon": "\ud83c\udfed",
+      "icon": "🏭",
       "version": "0.3.0",
       "author": "forge",
       "description": "Read-only DOM extraction from PMDB (Product Management Database) using the user's logged-in browser session.",
@@ -59,10 +59,10 @@
     {
       "id": "github-api",
       "name": "GitHub API",
-      "icon": "\ud83d\udc19",
+      "icon": "🐙",
       "version": "0.2.0",
       "author": "forge",
-      "description": "GitHub REST API connector \u2014 runs entirely server-side. Optional PAT for private repos / higher rate limits.",
+      "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
       "min_forge_version": "0.8.0"
     }
   ]

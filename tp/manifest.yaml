@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.4"
+version: "0.4.5"
 author: forge
 category: connector
 mode: browser-side
@@ -264,13 +264,9 @@ tools:
         type: number
         default: 10
         description: "Cap the number of weekly status entries returned (newest first). Set 0 for no cap."
-    # Land on the stable /nfr list page — nfr-detail has a SAML redirect
-    # loop bug on cold loads, but the list view + module nav is safe.
-    # Our script only needs the JWT in localStorage; it does its own API
-    # fetch and doesn't care which TP page the tab actually shows.
     page:
-      url: "{base_url}/nfr?release=all"
-      on_target: "/nfr"
+      url: "{base_url}/nfr-detail?id={args.id}"
+      on_target: "/nfr-detail"
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
@@ -379,11 +375,9 @@ tools:
       week_ending_date:
         type: string
         description: "YYYY-MM-DD. Default: this Sunday."
-    # Land on /nfr list page (stable) instead of /nfr-detail (loop bug).
-    # Script uses fetch + JWT — doesn't matter what TP page renders.
     page:
-      url: "{base_url}/nfr?release=all"
-      on_target: "/nfr"
+      url: "{base_url}/nfr-detail?id={args.nfr_id}"
+      on_target: "/nfr-detail"
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
@@ -467,11 +461,9 @@ tools:
         type: string
         required: true
         description: "Comment text."
-    # Land on /nfr list page (stable) instead of /nfr-detail (loop bug).
-    # Script uses fetch + JWT — doesn't matter what TP page renders.
     page:
-      url: "{base_url}/nfr?release=all"
-      on_target: "/nfr"
+      url: "{base_url}/nfr-detail?id={args.nfr_id}"
+      on_target: "/nfr-detail"
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
@@ -592,13 +584,9 @@ tools:
           Object of fields to update, e.g. { "progress": "75%",
           "qa_due": "2026-04-30" }. Other fields are preserved from
           the current detail.
-    # Land on the stable /nfr list page — nfr-detail has a SAML redirect
-    # loop bug on cold loads, but the list view + module nav is safe.
-    # Our script only needs the JWT in localStorage; it does its own API
-    # fetch and doesn't care which TP page the tab actually shows.
     page:
-      url: "{base_url}/nfr?release=all"
-      on_target: "/nfr"
+      url: "{base_url}/nfr-detail?id={args.id}"
+      on_target: "/nfr-detail"
     script: |
       const jwt = localStorage.token;
       if (!jwt) return { _error: 'Not logged in to TP.' };
