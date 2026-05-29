@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.3.0"
+version: "0.4.0"
 author: forge
 category: connector
 mode: browser-side
@@ -11,16 +11,13 @@ description: |
   using the JWT held in localStorage (no DOM scraping, no token in
   Forge settings — re-login refreshes automatically).
 
-  v0.3 (read-only):
-    - list_nfrs              (CA & NCM module)
-    - list_device_integration
-    - list_agent
-    - get_nfr                (single NFR full detail + weekly status + history + comments)
-    - list_releases          (valid release tags per module)
-
-  Destructive ops (update_weekly_status, add_comment, edit_nfr) need
-  one round of network capture from the user clicking those actions —
-  added in v0.4.
+  v0.3 — 5 read tools.
+  v0.4 — 3 destructive tools: add_weekly_status, add_comment,
+    edit_nfr_field. Endpoints captured by intercepting the page's
+    own XHR submit (weekly_status + edit verified; add_comment
+    follows the same naming convention but the modal didn't auto-
+    open during probing, so a first call may surface 404 if the
+    convention is off — try a single call to verify).
 
   Automation module (lab lock, testcase run, device upgrade, test
   results) ships in a later version (likely as a separate
@@ -299,6 +296,285 @@ tools:
       if (!r.ok) return { _error: `API ${r.status}`, url };
       const body = await r.json();
       return { module: args.module || 'NFR', releases: body };
+
+  # ─────────── add_weekly_status (destructive) ───────────
+  add_weekly_status:
+    description: |
+      Add a weekly status entry to an NFR. Status_message is HTML
+      (the upstream UI uses a Quill rich-text editor — plain text or
+      simple <p>...</p> wrappers are fine).
+
+      Verified endpoint shape: POST /adc/add_nfr_weekly_status/ with
+      JSON { nfr_id, week_starting_date, week_ending_date,
+      status_message, user }. The user email is auto-derived from
+      the JWT payload — no need to pass.
+
+      Dates accept YYYY-MM-DD. If you omit them, the script defaults
+      to the current week (Monday → Sunday).
+    destructive: true
+    parameters:
+      nfr_id:
+        type: number
+        required: true
+        description: "NFR id."
+      status_message:
+        type: string
+        required: true
+        description: "Status text. Plain text gets wrapped in <p>; full HTML is preserved."
+      week_starting_date:
+        type: string
+        description: "YYYY-MM-DD. Default: this Monday."
+      week_ending_date:
+        type: string
+        description: "YYYY-MM-DD. Default: this Sunday."
+    page:
+      url: "{base_url}/nfr-detail?id={args.nfr_id}"
+      on_target: "/nfr-detail"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      // Decode JWT payload to grab the user email.
+      let userEmail = '';
+      try {
+        const p = JSON.parse(atob(jwt.split('.')[1]));
+        userEmail = p.email || p.username || '';
+      } catch {}
+      if (!userEmail) return { _error: 'Could not extract user email from JWT payload.' };
+
+      // Default dates → current week (Mon..Sun)
+      const today = new Date();
+      const dow = today.getDay() === 0 ? 7 : today.getDay();   // Sunday=7 not 0
+      const mon = new Date(today); mon.setDate(today.getDate() - (dow - 1));
+      const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+      const iso = (d) => d.toISOString().slice(0, 10);
+      const weekStart = args.week_starting_date || iso(mon);
+      const weekEnd = args.week_ending_date || iso(sun);
+
+      // Wrap plain text in <p> if it doesn't already look like HTML
+      let msg = String(args.status_message || '');
+      if (msg && !/<[a-z][^>]*>/i.test(msg)) msg = `<p>${msg.replace(/\n/g, '</p><p>')}</p>`;
+
+      const body = JSON.stringify({
+        nfr_id: Number(args.nfr_id),
+        week_starting_date: weekStart,
+        week_ending_date: weekEnd,
+        status_message: msg,
+        user: userEmail,
+      });
+
+      const r = await fetch(`${apiBase}/adc/add_nfr_weekly_status/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `JWT ${jwt}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body,
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) {
+        const t = await r.text();
+        return { _error: `API ${r.status}`, body: t.slice(0, 500) };
+      }
+      const json = await r.json().catch(() => ({}));
+      return {
+        ok: true,
+        nfr_id: Number(args.nfr_id),
+        week_starting_date: weekStart,
+        week_ending_date: weekEnd,
+        created: json,
+      };
+
+  # ─────────── add_comment (destructive — UNVERIFIED endpoint) ───────────
+  add_comment:
+    description: |
+      Add a comment to an NFR. Comment body is HTML (matches the
+      weekly status convention; plain text gets wrapped in <p>).
+
+      Endpoint NOT directly verified during connector dev — inferred
+      from the read endpoint /adc/get_nfr_comment/{id} + the
+      add_nfr_weekly_status convention. If you get a 404, the actual
+      path may be /adc/add_nfr_comment/{id}/ or similar — open an
+      NFR, add a comment via the UI, watch network panel, and bump
+      this connector.
+    destructive: true
+    parameters:
+      nfr_id:
+        type: number
+        required: true
+        description: "NFR id."
+      comment:
+        type: string
+        required: true
+        description: "Comment text. Plain text gets wrapped in <p>; HTML preserved."
+    page:
+      url: "{base_url}/nfr-detail?id={args.nfr_id}"
+      on_target: "/nfr-detail"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      let userEmail = '';
+      try {
+        const p = JSON.parse(atob(jwt.split('.')[1]));
+        userEmail = p.email || p.username || '';
+      } catch {}
+      if (!userEmail) return { _error: 'Could not extract user email from JWT.' };
+
+      let msg = String(args.comment || '');
+      if (msg && !/<[a-z][^>]*>/i.test(msg)) msg = `<p>${msg.replace(/\n/g, '</p><p>')}</p>`;
+
+      const body = JSON.stringify({
+        nfr_id: Number(args.nfr_id),
+        comment: msg,
+        user: userEmail,
+      });
+
+      // Primary guess — same shape as add_nfr_weekly_status
+      let r = await fetch(`${apiBase}/adc/add_nfr_comment/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `JWT ${jwt}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body,
+      });
+      // Fallback path — id in URL, common Django REST idiom
+      if (r.status === 404) {
+        r = await fetch(`${apiBase}/adc/add_nfr_comment/${args.nfr_id}/`, {
+          method: 'POST',
+          headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body,
+        });
+      }
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) {
+        const t = await r.text();
+        return {
+          _error: `API ${r.status}`,
+          body: t.slice(0, 500),
+          _hint: 'Endpoint may not match — open the NFR in browser, add a comment, watch network panel, then update manifest.',
+        };
+      }
+      const json = await r.json().catch(() => ({}));
+      return { ok: true, nfr_id: Number(args.nfr_id), created: json };
+
+  # ─────────── edit_nfr_field (destructive) ───────────
+  edit_nfr_field:
+    description: |
+      Edit one or more fields on an NFR. TP's edit endpoint requires
+      the FULL detail object back as multipart FormData on every save
+      (it's a treat-the-NFR-as-one-form contract). This tool reads the
+      current detail, overlays your `patch` object, and re-submits the
+      full record.
+
+      Verified endpoint: POST /adc/edit_nfr_detail (FormData, all
+      ~50 fields + id + user).
+
+      Pass `patch` as an object of field_name → new_value. Only the
+      fields you want to change need to be in `patch`. Common
+      editable fields:
+        subject, release, priority, status, progress,
+        pd_assignee, backend_assignee, frontend_assignee,
+        at_assignee, qa_assignee, nfr_owner, git, git_branch, pmdb,
+        mantis_nfr, mantis_dev, mantis_doc, description,
+        story_point_backend, story_point_frontend,
+        pd_due, backend_due, frontend_due, qa_due, toi_due, ...
+    destructive: true
+    parameters:
+      id:
+        type: number
+        required: true
+        description: "NFR id."
+      patch:
+        type: json
+        required: true
+        description: |
+          Object of fields to update, e.g. { "progress": "75%",
+          "qa_due": "2026-04-30" }. Other fields are preserved from
+          the current detail.
+    page:
+      url: "{base_url}/nfr-detail?id={args.id}"
+      on_target: "/nfr-detail"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      let userEmail = '';
+      try {
+        const p = JSON.parse(atob(jwt.split('.')[1]));
+        userEmail = p.email || p.username || '';
+      } catch {}
+      if (!userEmail) return { _error: 'Could not extract user email from JWT.' };
+
+      // 1) Fetch current detail (we need to send ALL fields back)
+      const detailResp = await fetch(`${apiBase}/adc/get_nfr_detail/${Number(args.id)}`, {
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' },
+        credentials: 'include',
+      });
+      if (detailResp.status === 401 || detailResp.status === 403) return { _error: `Auth ${detailResp.status}` };
+      if (!detailResp.ok) return { _error: `Could not load current detail: HTTP ${detailResp.status}` };
+      const current = await detailResp.json();
+
+      // 2) Parse patch (LLM may pass as object OR JSON string)
+      let patch = args.patch;
+      if (typeof patch === 'string') {
+        try { patch = JSON.parse(patch); } catch { return { _error: 'patch is not valid JSON' }; }
+      }
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return { _error: 'patch must be a JSON object of field → value' };
+      }
+
+      // 3) Merge — known editable fields only; reject unknown to surface typos.
+      const merged = { ...current };
+      const declined = [];
+      for (const [k, v] of Object.entries(patch)) {
+        if (!(k in current) && !['mantis_dev', 'description'].includes(k)) {
+          declined.push(k);
+          continue;
+        }
+        merged[k] = v;
+      }
+      if (declined.length > 0 && Object.keys(patch).length === declined.length) {
+        return { _error: `Unknown field(s): ${declined.join(', ')}. Valid fields: ${Object.keys(current).join(', ')}` };
+      }
+
+      // 4) Build FormData with every field. Null → empty string (TP
+      // serialiser doesn't accept null literal).
+      const fd = new FormData();
+      for (const [k, v] of Object.entries(merged)) {
+        if (v == null) fd.append(k, '');
+        else if (typeof v === 'object') fd.append(k, JSON.stringify(v));
+        else fd.append(k, String(v));
+      }
+      fd.append('user', userEmail);
+
+      // 5) Submit
+      const r = await fetch(`${apiBase}/adc/edit_nfr_detail`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' },
+        // Don't set Content-Type — browser sets boundary automatically for FormData
+        credentials: 'include',
+        body: fd,
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status}` };
+      if (!r.ok) {
+        const t = await r.text();
+        return { _error: `API ${r.status}`, body: t.slice(0, 500) };
+      }
+      const json = await r.json().catch(() => ({}));
+      return {
+        ok: true,
+        id: Number(args.id),
+        changed: Object.keys(patch).filter(k => !declined.includes(k)),
+        declined_fields: declined,
+        result: json,
+      };
 
 test:
   description: "Opens TP and verifies the session JWT is in localStorage."
