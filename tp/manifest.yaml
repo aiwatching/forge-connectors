@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.5.2"
+version: "0.6.0"
 author: forge
 category: connector
 mode: browser-side
@@ -19,14 +19,15 @@ description: |
     open during probing, so a first call may surface 404 if the
     convention is off — try a single call to verify).
 
-  v0.5 — full automation workflow (same connector, shared JWT auth):
+  v0.5 — automation workflow (same connector, shared JWT auth):
     versions / labs / testcases discovery, run_pytest (destructive),
-    test result + execution polling, lab lock + kill (destructive),
-    and NAC upgrade: upgrade_lab / upgrade_device (destructive) +
-    check_upgrade_status / check_lab_upgrade_status polling.
+    test result + execution polling, lab lock + kill (destructive).
     Endpoints from docs/tp-automation-api.md (Automation.jsx contract).
-    'file' upgrade mode (multipart image upload) is not exposed —
-    chat can't pick a file; use GA / build / command.
+
+  v0.6 — NAC firmware upgrade REMOVED from here (it was unstable via
+    TP's automation page). Use the dedicated `nac` connector (direct
+    SSH). TP now only exposes get_lab_devices to find a lab's NAC IP,
+    which you then upgrade via nac.upgrade.
 
 settings:
   base_url:
@@ -1057,82 +1058,24 @@ tools:
       const json = await r.json().catch(() => ({}));
       return { ok: true, killed_exec_id: Number(args.id), result: json };
 
-  # ═══════════════ NAC upgrade ═══════════════
-  # An automation run targeting a specific build needs the testbed
-  # upgraded first. Two modes: per-device (upgrade_device) and whole
-  # testbed (upgrade_lab). Both are async — poll check_upgrade_status.
-  # docs/tp-automation-api.md "NAC upgrade APIs".
-
-  # ─────────── upgrade_lab (destructive) ───────────
-  upgrade_lab:
+  # ─────────── get_lab_devices ───────────
+  get_lab_devices:
     description: |
-      Upgrade every NAC/NCM device in an automation testbed at once.
-      POST /adc/nac-upgrade-testbed/ (multipart). Asynchronous — the
-      call returns once the jobs are queued; poll completion with
-      check_lab_upgrade_status (preferred) or check_upgrade_status
-      per IP.
+      List the devices in an automation testbed (lab), with the NAC/NCM
+      devices and their IPs called out — so you can hand an IP to the
+      `nac` connector's upgrade tool. Reads the lab's deployinfo via
+      get_automation_lab.
 
-      Identify the testbed by `lab` (name) — its deployinfo (device →
-      ip map) is resolved from list_automation_labs — or pass
-      `deployinfo` directly as a JSON object/string.
-
-      upgrade_type:
-        GA      → latest GA image (no extra field)
-        build   → a specific build; requires build_number (e.g. 7.6.6.0123)
-        command → raw upgrade CLI; requires command
-      ('file' mode isn't supported here — no way to attach an image
-      from chat.)
-
-      NOTE (from the API docs): testbed-mode `build` does NOT update
-      is_upgrading while running — it only writes SUCCESS at the end.
-      For live progress on a build upgrade, read the `log` field from
-      check_upgrade_status instead of trusting is_upgrading.
-
-      command/file upgrades block server-side for MINUTES (a NAC restore
-      is ~5-10 min). This tool does NOT hold the call open that long: it
-      sends the request, waits up to `wait_seconds` (default 25) just to
-      confirm the server accepted it, then returns
-      { ok:true, dispatched:true, fired_at }. The server keeps upgrading
-      after the client disconnects (verified). Then poll
-      check_lab_upgrade_status (pass the returned `fired_at` as `since`)
-      until done:true.
-    destructive: true
-    timeout_ms: 120000
+      NOTE: NAC firmware upgrades have MOVED to the dedicated `nac`
+      connector (direct SSH, stable). TP no longer upgrades NAC — use
+      this tool to find the NAC IP in a lab, then call nac.upgrade.
     parameters:
       lab:
         type: string
-        description: "Testbed name (from list_automation_labs). Used to resolve deployinfo. Omit if you pass deployinfo directly."
-      deployinfo:
-        type: json
-        description: |
-          Full device map for the testbed — the SAME object the page
-          posts: { dev0, ip0, dev1, ip1, ... } (0-indexed; include every
-          device, the backend picks the NAC/NCM ones). Example:
-          {"ip0":"10.15.52.151","dev0":"FortiGate","ip1":"10.15.52.152","dev1":"FortiNAC","ip2":"10.15.52.153","dev2":"FortiSwitch_Managed", ...}
-          Optional if `lab` is given AND the lab record carries deployinfo.
-      wait_seconds:
-        type: number
-        default: 25
-        description: "How long to wait for the upgrade request to be accepted before detaching and returning dispatched:true. The upgrade continues server-side regardless."
-      upgrade_type:
-        type: select
-        options: ["command", "build", "GA"]
-        default: "command"
-        description: "command (the common path here) / build / GA."
-      build_number:
-        type: string
-        description: "Required when upgrade_type=build, e.g. '7.6.6.0123'."
-      command:
-        type: string
-        description: |
-          Required when upgrade_type=command. The raw NAC CLI upgrade
-          command, run on every NAC/NCM in the testbed. Typical form
-          (scp the built image off the jenkins server and restore):
-          'execute restore image scp /var/lib/jenkins/jobs/fortinac-build-7.6-token/builds/17/archive/nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out 10.15.33.5 jenkins fortinet'
-          (the IP is the scp SOURCE server; 'jenkins fortinet' = scp user/pass).
+        description: "Testbed name (from list_automation_labs). If omitted and you own exactly one lab, it's used; if several, the list is returned so you can pick."
       user:
         type: string
-        description: "TP login name (for lab resolution). Default: derived from JWT."
+        description: "TP login name. Default: derived from JWT."
     page:
       url: "{base_url}/automation"
       on_target: "/automation"
@@ -1144,308 +1087,35 @@ tools:
         if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
       } catch {}
       const apiBase = `${location.protocol}//${location.hostname}:8000`;
-      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
-      const upgrade_type = ['GA', 'build', 'command'].includes(args.upgrade_type) ? args.upgrade_type : 'build';
-      if (upgrade_type === 'build' && !String(args.build_number || '').trim()) return { _error: 'build_number is required when upgrade_type=build' };
-      if (upgrade_type === 'command' && !String(args.command || '').trim()) return { _error: 'command is required when upgrade_type=command' };
-
-      // Resolve deployinfo: explicit arg wins, else look it up by lab name.
-      let deploy = args.deployinfo;
-      if (typeof deploy === 'string' && deploy.trim()) { try { deploy = JSON.parse(deploy); } catch { return { _error: 'deployinfo is not valid JSON' }; } }
-      if (!deploy || typeof deploy !== 'object') {
-        const lab = String(args.lab || '').trim();
-        if (!lab) return { _error: 'Pass `lab` (to resolve deployinfo) or `deployinfo` directly.' };
-        let user = (args.user || '').trim();
-        if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
-        const lr = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ user }) });
-        if (!lr.ok) return { _error: `Could not load labs to resolve deployinfo: HTTP ${lr.status}` };
-        const labs = await lr.json();
-        const row = Array.isArray(labs) ? labs.find(l => l && l.name === lab) : null;
-        if (!row) return { _error: `Lab '${lab}' not found in your labs.` };
-        let di = row.deployinfo;
-        if (typeof di === 'string') { try { di = JSON.parse(di); } catch {} }
-        if (!di || typeof di !== 'object') return { _error: `Lab '${lab}' has no usable deployinfo; pass deployinfo explicitly.`, _lab_row: row };
-        deploy = di;
-      }
-
-      const fd = new FormData();
-      fd.append('deployinfo', JSON.stringify(deploy));
-      fd.append('upgrade_type', upgrade_type);
-      if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
-      if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
-
-      // NAC/NCM IPs in this testbed (dev<N> value contains nac|ncm → ip<N>).
-      const ips = [];
-      for (const [k, v] of Object.entries(deploy)) {
-        const m = /^dev(\d+)$/.exec(k);
-        if (m && /nac|ncm/i.test(String(v))) { const ip = deploy[`ip${m[1]}`]; if (ip) ips.push(String(ip)); }
-      }
-      const firedAt = new Date().toISOString();
-      // command/file block server-side for minutes. Don't hold the call:
-      // wait `wait_seconds` just to confirm acceptance, then detach. The
-      // server keeps upgrading after we disconnect (verified in the field).
-      const waitMs = Math.max(5, Number(args.wait_seconds) || 25) * 1000;
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), waitMs);
-      try {
-        const r = await fetch(`${apiBase}/adc/nac-upgrade-testbed/`, { method: 'POST', headers: hdr, credentials: 'include', body: fd, signal: ctrl.signal });
-        clearTimeout(to);
-        if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
-        if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
-        const json = await r.json().catch(() => ({}));
-        return { ok: true, dispatched: true, completed: true, upgrade_type, build_number: args.build_number || null, queued_ips: ips, fired_at: firedAt, result: json, _hint: `Returned before detach — upgrade finished fast. Verify with check_lab_upgrade_status (since='${firedAt}').` };
-      } catch (e) {
-        clearTimeout(to);
-        if (e && e.name === 'AbortError') {
-          return { ok: true, dispatched: true, completed: false, upgrade_type, build_number: args.build_number || null, queued_ips: ips, fired_at: firedAt, _hint: `Upgrade request accepted and detached after ${waitMs/1000}s; it runs server-side (~5-10 min for NAC). Poll check_lab_upgrade_status with lab/deployinfo and since='${firedAt}' until done:true.` };
-        }
-        return { _error: `Upgrade request failed: ${String(e)}` };
-      }
-
-  # ─────────── upgrade_device (destructive) ───────────
-  upgrade_device:
-    description: |
-      Upgrade a single FortiNAC device by IP. POST /adc/nac-upgrade/
-      (multipart). command/file block for minutes; like upgrade_lab this
-      detaches after `wait_seconds` and returns dispatched:true + fired_at.
-      Poll check_upgrade_status { ip } (with since=fired_at) until done.
-
-      upgrade_type: GA (no extra field) / build (build_number) /
-      command (command). 'file' mode not supported here.
-    destructive: true
-    timeout_ms: 120000
-    parameters:
-      ip:
-        type: string
-        required: true
-        description: "Target device IP."
-      wait_seconds:
-        type: number
-        default: 25
-        description: "Seconds to wait for acceptance before detaching. Upgrade continues server-side."
-      upgrade_type:
-        type: select
-        options: ["command", "build", "GA"]
-        default: "command"
-      build_number:
-        type: string
-        description: "Required when upgrade_type=build, e.g. '7.6.6.0123'."
-      command:
-        type: string
-        description: |
-          Required when upgrade_type=command. Raw NAC CLI upgrade cmd, e.g.
-          'execute restore image scp /var/lib/jenkins/jobs/fortinac-build-7.6-token/builds/17/archive/nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out 10.15.33.5 jenkins fortinet'
-          (IP = scp source server; 'jenkins fortinet' = scp user/pass).
-    page:
-      url: "{base_url}/automation"
-      on_target: "/automation"
-    script: |
-      const jwt = localStorage.token;
-      if (!jwt) return { _error: 'Not logged in to TP.' };
-      try {
-        const _p = JSON.parse(atob(jwt.split('.')[1]));
-        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
-      } catch {}
-      const apiBase = `${location.protocol}//${location.hostname}:8000`;
-      const ip = String(args.ip || '').trim();
-      if (!ip) return { _error: 'ip is required' };
-      const upgrade_type = ['GA', 'build', 'command'].includes(args.upgrade_type) ? args.upgrade_type : 'build';
-      if (upgrade_type === 'build' && !String(args.build_number || '').trim()) return { _error: 'build_number is required when upgrade_type=build' };
-      if (upgrade_type === 'command' && !String(args.command || '').trim()) return { _error: 'command is required when upgrade_type=command' };
-      const fd = new FormData();
-      fd.append('ip', ip);
-      fd.append('upgrade_type', upgrade_type);
-      if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
-      if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
-      const firedAt = new Date().toISOString();
-      const waitMs = Math.max(5, Number(args.wait_seconds) || 25) * 1000;
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), waitMs);
-      try {
-        const r = await fetch(`${apiBase}/adc/nac-upgrade/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include', body: fd, signal: ctrl.signal });
-        clearTimeout(to);
-        if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
-        if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
-        const json = await r.json().catch(() => ({}));
-        return { ok: true, dispatched: true, completed: true, ip, upgrade_type, build_number: args.build_number || null, fired_at: firedAt, result: json, _hint: `Returned before detach. Verify with check_upgrade_status { ip } (since='${firedAt}').` };
-      } catch (e) {
-        clearTimeout(to);
-        if (e && e.name === 'AbortError') {
-          return { ok: true, dispatched: true, completed: false, ip, upgrade_type, build_number: args.build_number || null, fired_at: firedAt, _hint: `Request accepted and detached after ${waitMs/1000}s; upgrade runs server-side (~5-10 min). Poll check_upgrade_status { ip } with since='${firedAt}' until done.` };
-        }
-        return { _error: `Upgrade request failed: ${String(e)}` };
-      }
-
-  # ─────────── check_upgrade_status ───────────
-  check_upgrade_status:
-    description: |
-      Poll the upgrade status of one device by IP. POST
-      /adc/check-upgrade-status/ { ip }. Returns is_upgrading,
-      last_task_status (SUCCESS/FAILURE/PENDING/PROGRESS), build/image
-      info, updated_at, and a `log` tail.
-
-      CAVEAT (testbed-mode build): is_upgrading stays false during a
-      testbed `build` upgrade — it only flips on the final SUCCESS.
-      For live progress, read the `log` field. (Set include_log=false
-      to drop the potentially-large log from the response.)
-    parameters:
-      ip:
-        type: string
-        required: true
-        description: "Device IP to poll."
-      include_log:
-        type: boolean
-        default: true
-        description: "false = strip the `log` field (can be large)."
-    page:
-      url: "{base_url}/automation"
-      on_target: "/automation"
-    script: |
-      const jwt = localStorage.token;
-      if (!jwt) return { _error: 'Not logged in to TP.' };
-      try {
-        const _p = JSON.parse(atob(jwt.split('.')[1]));
-        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
-      } catch {}
-      const apiBase = `${location.protocol}//${location.hostname}:8000`;
-      const ip = String(args.ip || '').trim();
-      if (!ip) return { _error: 'ip is required' };
-      const r = await fetch(`${apiBase}/adc/check-upgrade-status/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ip }) });
+      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+      let user = (args.user || '').trim();
+      if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+      if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
+      const r = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: hdr, credentials: 'include', body: JSON.stringify({ user }) });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
-      if (r.status === 404) return { ip, found: false, _note: 'No upgrade record for this IP (never upgraded, or testbed-GA stub).' };
       if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
-      const json = await r.json().catch(() => ({}));
-      if (args.include_log === false && json && typeof json === 'object') delete json.log;
-      return json;
-
-  # ─────────── check_lab_upgrade_status ───────────
-  check_lab_upgrade_status:
-    description: |
-      Answer "is the testbed upgrade finished?" Resolves the NAC/NCM
-      devices in a testbed (by `lab` name or explicit `deployinfo`),
-      polls check-upgrade-status for each, and aggregates one verdict.
-
-      IMPORTANT — avoid false "done": check-upgrade-status returns the
-      LAST upgrade record, which may be days old (a stale SUCCESS from a
-      previous build). last_task_status=SUCCESS alone is NOT proof the
-      current upgrade finished. Two ways to disambiguate, both supported:
-        • `since` (recommended): pass the `fired_at` returned by
-          upgrade_lab. A device only counts as done if its `updated_at`
-          is at/after `since` (i.e. the record was written by THIS run).
-          A device still showing an older record → reported not-done
-          (it's probably still upgrading / rebooting).
-        • `target_image`: a substring of the image/build you're moving
-          to (e.g. 'build6957' or '6957'). A device is done only if its
-          last_image_name/last_build_number contains it.
-      Each device also reports `minutes_since_update` so you can eyeball
-      freshness. Poll every ~30-60s; a NAC upgrade is ~5-10 min.
-    parameters:
-      lab:
-        type: string
-        description: "Testbed name (resolves deployinfo via list_automation_labs)."
-      deployinfo:
-        type: json
-        description: "Device map (0-indexed dev0/ip0…), if you'd rather pass it directly than resolve by lab."
-      since:
-        type: string
-        description: "ISO timestamp (the upgrade_lab `fired_at`). A device is only 'done' if its updated_at >= since. Strongly recommended to avoid stale-SUCCESS false positives."
-      target_image:
-        type: string
-        description: "Optional substring of the target build/image (e.g. '6957'). Device is done only if last_image_name/last_build_number contains it."
-      include_log:
-        type: boolean
-        default: false
-        description: "true = keep each device's `log` tail (large). Default false."
-      user:
-        type: string
-        description: "TP login name (for lab resolution). Default: derived from JWT."
-    page:
-      url: "{base_url}/automation"
-      on_target: "/automation"
-    script: |
-      const jwt = localStorage.token;
-      if (!jwt) return { _error: 'Not logged in to TP.' };
-      try {
-        const _p = JSON.parse(atob(jwt.split('.')[1]));
-        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
-      } catch {}
-      const apiBase = `${location.protocol}//${location.hostname}:8000`;
-      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
-
-      let deploy = args.deployinfo;
-      if (typeof deploy === 'string' && deploy.trim()) { try { deploy = JSON.parse(deploy); } catch { return { _error: 'deployinfo is not valid JSON' }; } }
-      if (!deploy || typeof deploy !== 'object') {
-        const lab = String(args.lab || '').trim();
-        if (!lab) return { _error: 'Pass `lab` or `deployinfo`.' };
-        let user = (args.user || '').trim();
-        if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
-        const lr = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ user }) });
-        if (!lr.ok) return { _error: `Could not load labs: HTTP ${lr.status}` };
-        const labs = await lr.json();
-        const row = Array.isArray(labs) ? labs.find(l => l && l.name === lab) : null;
-        if (!row) return { _error: `Lab '${lab}' not found.` };
-        let di = row.deployinfo;
-        if (typeof di === 'string') { try { di = JSON.parse(di); } catch {} }
-        if (!di || typeof di !== 'object') return { _error: `Lab '${lab}' has no usable deployinfo; pass deployinfo explicitly.` };
-        deploy = di;
-      }
-
-      // Collect NAC/NCM IPs (dev<N> value contains nac|ncm → ip<N>).
-      const targets = [];
-      for (const [k, v] of Object.entries(deploy)) {
-        const m = /^dev(\d+)$/.exec(k);
-        if (m && /nac|ncm/i.test(String(v))) { const ip = deploy[`ip${m[1]}`]; if (ip) targets.push({ dev: String(v), ip: String(ip) }); }
-      }
-      if (!targets.length) return { _error: 'No NAC/NCM devices found in deployinfo.', deployinfo: deploy };
-
-      const now = Date.now();
-      const sinceMs = args.since ? Date.parse(String(args.since)) : null;
-      const target = String(args.target_image || '').trim().toLowerCase();
+      const labs = await r.json();
+      if (!Array.isArray(labs)) return { _error: 'lab list not an array' };
+      let lab = (args.lab || '').trim();
+      let row;
+      if (lab) { row = labs.find(l => l && l.name === lab); if (!row) return { _error: `Lab '${lab}' not found.`, available_labs: labs.map(l => l && l.name) }; }
+      else if (labs.length === 1) { row = labs[0]; lab = row.name; }
+      else if (labs.length === 0) return { _error: 'No labs available to you.' };
+      else return { _error: `Multiple labs — specify lab=. Options: ${labs.map(l => l && l.name).join(', ')}`, available_labs: labs.map(l => l && l.name) };
+      let di = row.deployinfo;
+      if (typeof di === 'string') { try { di = JSON.parse(di); } catch {} }
+      if (!di || typeof di !== 'object') return { _error: `Lab '${lab}' has no deployinfo in get_automation_lab; can't list devices — paste the deployinfo manually if you have it.`, _lab_row: row };
       const devices = [];
-      for (const t of targets) {
-        try {
-          const r = await fetch(`${apiBase}/adc/check-upgrade-status/`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ip: t.ip }) });
-          if (r.status === 404) { devices.push({ ...t, found: false, last_task_status: null, is_upgrading: false, fresh: false }); continue; }
-          if (!r.ok) { devices.push({ ...t, _error: `HTTP ${r.status}` }); continue; }
-          const j = await r.json().catch(() => ({}));
-          if (args.include_log !== true && j && typeof j === 'object') delete j.log;
-          const updMs = j.updated_at ? Date.parse(String(j.updated_at)) : NaN;
-          const minsSince = Number.isFinite(updMs) ? Math.round((now - updMs) / 60000) : null;
-          const fresh = sinceMs == null ? null : (Number.isFinite(updMs) && updMs >= sinceMs - 2000);
-          const imgStr = `${j.last_image_name || ''} ${j.last_build_number || ''}`.toLowerCase();
-          const imageMatch = target ? imgStr.includes(target) : null;
-          devices.push({ ...t, found: true, is_upgrading: !!j.is_upgrading, last_task_status: j.last_task_status, last_build_number: j.last_build_number, last_image_name: j.last_image_name, updated_at: j.updated_at, minutes_since_update: minsSince, ...(fresh != null ? { fresh } : {}), ...(imageMatch != null ? { image_matches_target: imageMatch } : {}), ...(args.include_log === true ? { log: j.log } : {}) });
-        } catch (e) { devices.push({ ...t, _error: String(e) }); }
+      for (const [k, v] of Object.entries(di)) {
+        const m = /^dev(\d+)$/.exec(k);
+        if (m) { const ip = di[`ip${m[1]}`]; const dev = String(v); devices.push({ slot: Number(m[1]), dev, ip: ip ? String(ip) : null, is_nac: /nac|ncm/i.test(dev) }); }
       }
-      const anyUpgrading = devices.some(d => d.is_upgrading);
-      const anyFailure = devices.some(d => d.last_task_status === 'FAILURE');
-      // A device is "done for THIS run" only if: terminal status, not
-      // upgrading, fresh (when `since` given), and image matches (when
-      // `target_image` given). Stale/old records → not done.
-      const isDone = (d) => {
-        if (d._error) return false;
-        if (d.is_upgrading) return false;
-        if (!(d.last_task_status === 'SUCCESS' || d.last_task_status === 'FAILURE')) return false;
-        if (sinceMs != null && d.fresh !== true) return false;
-        if (target && d.image_matches_target !== true) return false;
-        return true;
-      };
-      const done = devices.length > 0 && devices.every(isDone);
-      const stale = sinceMs != null && devices.filter(d => d.found && d.fresh === false);
-      return {
-        lab: args.lab || null,
-        device_count: devices.length,
-        done,
-        any_upgrading: anyUpgrading,
-        any_failure: anyFailure,
-        since: args.since || null,
-        target_image: args.target_image || null,
-        ...(sinceMs != null ? { stale_devices: (stale || []).map(d => d.ip) } : {}),
-        ...((sinceMs == null && !target) ? { _warn: 'No `since`/`target_image` given — `done` trusts last_task_status, which may be a STALE success from a previous upgrade. Pass since=fired_at for a reliable verdict.' } : {}),
-        devices,
-      };
+      devices.sort((a, b) => a.slot - b.slot);
+      const nac_devices = devices.filter(d => d.is_nac && d.ip).map(d => ({ dev: d.dev, ip: d.ip }));
+      return { lab, status: row.status, device_count: devices.length, nac_devices, devices, _hint: 'Upgrade a NAC via the `nac` connector: nac.upgrade with the nac connector pointed at <nac ip>.' };
 
 test:
   description: "Opens TP and verifies the session JWT is in localStorage."
   probe: browser
   timeout_ms: 20000
+
