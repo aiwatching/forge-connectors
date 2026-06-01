@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.5.0"
+version: "0.5.1"
 author: forge
 category: connector
 mode: browser-side
@@ -836,8 +836,7 @@ tools:
     parameters:
       lab:
         type: string
-        required: true
-        description: "AT lab name (from list_automation_labs). Comma-separate for multiple ('L2Mode_7,L2Mode_9')."
+        description: "AT lab name (from list_automation_labs), e.g. 'AT16_Combined_FSW'. Comma-separate to span labs ('L2Mode_7,L2Mode_9'). If omitted and you own exactly one lab, it's auto-selected; if you own several, the tool returns the list so you can pick."
       testcase:
         type: json
         required: true
@@ -863,8 +862,18 @@ tools:
       let user = (args.user || '').trim();
       if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
       if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
-      const lab = String(args.lab || '').trim();
-      if (!lab) return { _error: 'lab is required' };
+      let lab = String(args.lab || '').trim();
+      if (!lab) {
+        // No lab given — auto-pick if the user owns exactly one, else
+        // surface the choices (don't guess when there are several).
+        const lr = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ user }) });
+        if (!lr.ok) return { _error: `lab not given and could not auto-resolve (labs HTTP ${lr.status}).` };
+        const labs = await lr.json();
+        const names = Array.isArray(labs) ? labs.map(l => l && l.name).filter(Boolean) : [];
+        if (names.length === 1) lab = String(names[0]);
+        else if (names.length === 0) return { _error: 'No automation labs are available to you.' };
+        else return { _error: `Multiple labs available — specify which via lab=. Options: ${names.join(', ')}`, available_labs: names };
+      }
       // Normalize testcase → array of strings (accept array, JSON string, or CSV)
       let tc = args.testcase;
       if (typeof tc === 'string') {
