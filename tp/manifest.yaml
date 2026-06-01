@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.5.1"
+version: "0.5.2"
 author: forge
 category: connector
 mode: browser-side
@@ -1087,14 +1087,33 @@ tools:
       is_upgrading while running — it only writes SUCCESS at the end.
       For live progress on a build upgrade, read the `log` field from
       check_upgrade_status instead of trusting is_upgrading.
+
+      command/file upgrades block server-side for MINUTES (a NAC restore
+      is ~5-10 min). This tool does NOT hold the call open that long: it
+      sends the request, waits up to `wait_seconds` (default 25) just to
+      confirm the server accepted it, then returns
+      { ok:true, dispatched:true, fired_at }. The server keeps upgrading
+      after the client disconnects (verified). Then poll
+      check_lab_upgrade_status (pass the returned `fired_at` as `since`)
+      until done:true.
     destructive: true
+    timeout_ms: 120000
     parameters:
       lab:
         type: string
         description: "Testbed name (from list_automation_labs). Used to resolve deployinfo. Omit if you pass deployinfo directly."
       deployinfo:
         type: json
-        description: "Device map { dev1, ip1, dev2, ip2, ... }. Optional if `lab` is given and the lab record carries deployinfo."
+        description: |
+          Full device map for the testbed — the SAME object the page
+          posts: { dev0, ip0, dev1, ip1, ... } (0-indexed; include every
+          device, the backend picks the NAC/NCM ones). Example:
+          {"ip0":"10.15.52.151","dev0":"FortiGate","ip1":"10.15.52.152","dev1":"FortiNAC","ip2":"10.15.52.153","dev2":"FortiSwitch_Managed", ...}
+          Optional if `lab` is given AND the lab record carries deployinfo.
+      wait_seconds:
+        type: number
+        default: 25
+        description: "How long to wait for the upgrade request to be accepted before detaching and returning dispatched:true. The upgrade continues server-side regardless."
       upgrade_type:
         type: select
         options: ["command", "build", "GA"]
@@ -1155,33 +1174,55 @@ tools:
       if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
       if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
 
-      const r = await fetch(`${apiBase}/adc/nac-upgrade-testbed/`, { method: 'POST', headers: hdr, credentials: 'include', body: fd });
-      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
-      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
-      const json = await r.json().catch(() => ({}));
-      // Surface the NAC/NCM IPs we just queued so the caller can poll.
+      // NAC/NCM IPs in this testbed (dev<N> value contains nac|ncm → ip<N>).
       const ips = [];
       for (const [k, v] of Object.entries(deploy)) {
         const m = /^dev(\d+)$/.exec(k);
         if (m && /nac|ncm/i.test(String(v))) { const ip = deploy[`ip${m[1]}`]; if (ip) ips.push(String(ip)); }
       }
-      const sync = (upgrade_type === 'command' || upgrade_type === 'file');
-      return { ok: true, upgrade_type, build_number: args.build_number || null, queued_ips: ips, result: json, _hint: sync ? 'command/file run SYNCHRONOUSLY — this returned only after every device finished, so the upgrade is already done (check_lab_upgrade_status reflects the final state). Note: a slow restore can take minutes; the call blocks the whole time.' : 'GA/build are async — poll check_lab_upgrade_status with the same lab/deployinfo.' };
+      const firedAt = new Date().toISOString();
+      // command/file block server-side for minutes. Don't hold the call:
+      // wait `wait_seconds` just to confirm acceptance, then detach. The
+      // server keeps upgrading after we disconnect (verified in the field).
+      const waitMs = Math.max(5, Number(args.wait_seconds) || 25) * 1000;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), waitMs);
+      try {
+        const r = await fetch(`${apiBase}/adc/nac-upgrade-testbed/`, { method: 'POST', headers: hdr, credentials: 'include', body: fd, signal: ctrl.signal });
+        clearTimeout(to);
+        if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+        if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
+        const json = await r.json().catch(() => ({}));
+        return { ok: true, dispatched: true, completed: true, upgrade_type, build_number: args.build_number || null, queued_ips: ips, fired_at: firedAt, result: json, _hint: `Returned before detach — upgrade finished fast. Verify with check_lab_upgrade_status (since='${firedAt}').` };
+      } catch (e) {
+        clearTimeout(to);
+        if (e && e.name === 'AbortError') {
+          return { ok: true, dispatched: true, completed: false, upgrade_type, build_number: args.build_number || null, queued_ips: ips, fired_at: firedAt, _hint: `Upgrade request accepted and detached after ${waitMs/1000}s; it runs server-side (~5-10 min for NAC). Poll check_lab_upgrade_status with lab/deployinfo and since='${firedAt}' until done:true.` };
+        }
+        return { _error: `Upgrade request failed: ${String(e)}` };
+      }
 
   # ─────────── upgrade_device (destructive) ───────────
   upgrade_device:
     description: |
       Upgrade a single FortiNAC device by IP. POST /adc/nac-upgrade/
-      (multipart). Asynchronous — poll check_upgrade_status { ip }.
+      (multipart). command/file block for minutes; like upgrade_lab this
+      detaches after `wait_seconds` and returns dispatched:true + fired_at.
+      Poll check_upgrade_status { ip } (with since=fired_at) until done.
 
       upgrade_type: GA (no extra field) / build (build_number) /
       command (command). 'file' mode not supported here.
     destructive: true
+    timeout_ms: 120000
     parameters:
       ip:
         type: string
         required: true
         description: "Target device IP."
+      wait_seconds:
+        type: number
+        default: 25
+        description: "Seconds to wait for acceptance before detaching. Upgrade continues server-side."
       upgrade_type:
         type: select
         options: ["command", "build", "GA"]
@@ -1216,12 +1257,24 @@ tools:
       fd.append('upgrade_type', upgrade_type);
       if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
       if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
-      const r = await fetch(`${apiBase}/adc/nac-upgrade/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include', body: fd });
-      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
-      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
-      const json = await r.json().catch(() => ({}));
-      const sync = (upgrade_type === 'command' || upgrade_type === 'file');
-      return { ok: true, ip, upgrade_type, build_number: args.build_number || null, result: json, _hint: sync ? 'command/file run synchronously — already done when this returns (may take minutes).' : 'GA/build are async — poll check_upgrade_status { ip }.' };
+      const firedAt = new Date().toISOString();
+      const waitMs = Math.max(5, Number(args.wait_seconds) || 25) * 1000;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), waitMs);
+      try {
+        const r = await fetch(`${apiBase}/adc/nac-upgrade/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include', body: fd, signal: ctrl.signal });
+        clearTimeout(to);
+        if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+        if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
+        const json = await r.json().catch(() => ({}));
+        return { ok: true, dispatched: true, completed: true, ip, upgrade_type, build_number: args.build_number || null, fired_at: firedAt, result: json, _hint: `Returned before detach. Verify with check_upgrade_status { ip } (since='${firedAt}').` };
+      } catch (e) {
+        clearTimeout(to);
+        if (e && e.name === 'AbortError') {
+          return { ok: true, dispatched: true, completed: false, ip, upgrade_type, build_number: args.build_number || null, fired_at: firedAt, _hint: `Request accepted and detached after ${waitMs/1000}s; upgrade runs server-side (~5-10 min). Poll check_upgrade_status { ip } with since='${firedAt}' until done.` };
+        }
+        return { _error: `Upgrade request failed: ${String(e)}` };
+      }
 
   # ─────────── check_upgrade_status ───────────
   check_upgrade_status:
@@ -1270,22 +1323,35 @@ tools:
     description: |
       Answer "is the testbed upgrade finished?" Resolves the NAC/NCM
       devices in a testbed (by `lab` name or explicit `deployinfo`),
-      polls check-upgrade-status for each, and aggregates a single
-      done/in-progress verdict.
+      polls check-upgrade-status for each, and aggregates one verdict.
 
-      `done` is true when every device's last_task_status is terminal
-      (SUCCESS or FAILURE) and none is is_upgrading. Because testbed
-      `build` upgrades don't set is_upgrading mid-run, a device whose
-      status is still the PREVIOUS build's SUCCESS can look "done"
-      prematurely — cross-check last_build_number against the build
-      you requested when in doubt.
+      IMPORTANT — avoid false "done": check-upgrade-status returns the
+      LAST upgrade record, which may be days old (a stale SUCCESS from a
+      previous build). last_task_status=SUCCESS alone is NOT proof the
+      current upgrade finished. Two ways to disambiguate, both supported:
+        • `since` (recommended): pass the `fired_at` returned by
+          upgrade_lab. A device only counts as done if its `updated_at`
+          is at/after `since` (i.e. the record was written by THIS run).
+          A device still showing an older record → reported not-done
+          (it's probably still upgrading / rebooting).
+        • `target_image`: a substring of the image/build you're moving
+          to (e.g. 'build6957' or '6957'). A device is done only if its
+          last_image_name/last_build_number contains it.
+      Each device also reports `minutes_since_update` so you can eyeball
+      freshness. Poll every ~30-60s; a NAC upgrade is ~5-10 min.
     parameters:
       lab:
         type: string
         description: "Testbed name (resolves deployinfo via list_automation_labs)."
       deployinfo:
         type: json
-        description: "Device map, if you'd rather pass it directly than resolve by lab."
+        description: "Device map (0-indexed dev0/ip0…), if you'd rather pass it directly than resolve by lab."
+      since:
+        type: string
+        description: "ISO timestamp (the upgrade_lab `fired_at`). A device is only 'done' if its updated_at >= since. Strongly recommended to avoid stale-SUCCESS false positives."
+      target_image:
+        type: string
+        description: "Optional substring of the target build/image (e.g. '6957'). Device is done only if last_image_name/last_build_number contains it."
       include_log:
         type: boolean
         default: false
@@ -1332,26 +1398,50 @@ tools:
       }
       if (!targets.length) return { _error: 'No NAC/NCM devices found in deployinfo.', deployinfo: deploy };
 
+      const now = Date.now();
+      const sinceMs = args.since ? Date.parse(String(args.since)) : null;
+      const target = String(args.target_image || '').trim().toLowerCase();
       const devices = [];
       for (const t of targets) {
         try {
           const r = await fetch(`${apiBase}/adc/check-upgrade-status/`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ip: t.ip }) });
-          if (r.status === 404) { devices.push({ ...t, found: false, last_task_status: null, is_upgrading: false }); continue; }
+          if (r.status === 404) { devices.push({ ...t, found: false, last_task_status: null, is_upgrading: false, fresh: false }); continue; }
           if (!r.ok) { devices.push({ ...t, _error: `HTTP ${r.status}` }); continue; }
           const j = await r.json().catch(() => ({}));
           if (args.include_log !== true && j && typeof j === 'object') delete j.log;
-          devices.push({ ...t, found: true, is_upgrading: !!j.is_upgrading, last_task_status: j.last_task_status, last_build_number: j.last_build_number, last_image_name: j.last_image_name, updated_at: j.updated_at, ...(args.include_log === true ? { log: j.log } : {}) });
+          const updMs = j.updated_at ? Date.parse(String(j.updated_at)) : NaN;
+          const minsSince = Number.isFinite(updMs) ? Math.round((now - updMs) / 60000) : null;
+          const fresh = sinceMs == null ? null : (Number.isFinite(updMs) && updMs >= sinceMs - 2000);
+          const imgStr = `${j.last_image_name || ''} ${j.last_build_number || ''}`.toLowerCase();
+          const imageMatch = target ? imgStr.includes(target) : null;
+          devices.push({ ...t, found: true, is_upgrading: !!j.is_upgrading, last_task_status: j.last_task_status, last_build_number: j.last_build_number, last_image_name: j.last_image_name, updated_at: j.updated_at, minutes_since_update: minsSince, ...(fresh != null ? { fresh } : {}), ...(imageMatch != null ? { image_matches_target: imageMatch } : {}), ...(args.include_log === true ? { log: j.log } : {}) });
         } catch (e) { devices.push({ ...t, _error: String(e) }); }
       }
       const anyUpgrading = devices.some(d => d.is_upgrading);
-      const allTerminal = devices.every(d => !d.is_upgrading && (d.last_task_status === 'SUCCESS' || d.last_task_status === 'FAILURE' || d.found === false));
       const anyFailure = devices.some(d => d.last_task_status === 'FAILURE');
+      // A device is "done for THIS run" only if: terminal status, not
+      // upgrading, fresh (when `since` given), and image matches (when
+      // `target_image` given). Stale/old records → not done.
+      const isDone = (d) => {
+        if (d._error) return false;
+        if (d.is_upgrading) return false;
+        if (!(d.last_task_status === 'SUCCESS' || d.last_task_status === 'FAILURE')) return false;
+        if (sinceMs != null && d.fresh !== true) return false;
+        if (target && d.image_matches_target !== true) return false;
+        return true;
+      };
+      const done = devices.length > 0 && devices.every(isDone);
+      const stale = sinceMs != null && devices.filter(d => d.found && d.fresh === false);
       return {
         lab: args.lab || null,
         device_count: devices.length,
-        done: allTerminal && !anyUpgrading,
+        done,
         any_upgrading: anyUpgrading,
         any_failure: anyFailure,
+        since: args.since || null,
+        target_image: args.target_image || null,
+        ...(sinceMs != null ? { stale_devices: (stale || []).map(d => d.ip) } : {}),
+        ...((sinceMs == null && !target) ? { _warn: 'No `since`/`target_image` given — `done` trusts last_task_status, which may be a STALE success from a previous upgrade. Pass since=fired_at for a reliable verdict.' } : {}),
         devices,
       };
 

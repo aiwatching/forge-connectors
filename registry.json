@@ -6,7 +6,7 @@
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "author": "forge",
       "description": "FortiNAC TP browser connector — NFR read/edit + weekly status + comments, plus full automation (labs, testcases, pytest runs, results, NAC upgrade + status polling) — all via your logged-in session.",
       "min_forge_version": "0.9.17"
