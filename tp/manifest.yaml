@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.6"
+version: "0.5.0"
 author: forge
 category: connector
 mode: browser-side
@@ -19,9 +19,14 @@ description: |
     open during probing, so a first call may surface 404 if the
     convention is off — try a single call to verify).
 
-  Automation module (lab lock, testcase run, device upgrade, test
-  results) ships in a later version (likely as a separate
-  `tp-automation` connector when its API stabilises).
+  v0.5 — full automation workflow (same connector, shared JWT auth):
+    versions / labs / testcases discovery, run_pytest (destructive),
+    test result + execution polling, lab lock + kill (destructive),
+    and NAC upgrade: upgrade_lab / upgrade_device (destructive) +
+    check_upgrade_status / check_lab_upgrade_status polling.
+    Endpoints from docs/tp-automation-api.md (Automation.jsx contract).
+    'file' upgrade mode (multipart image upload) is not exposed —
+    chat can't pick a file; use GA / build / command.
 
 settings:
   base_url:
@@ -639,10 +644,26 @@ tools:
         return { _error: `Unknown field(s): ${declined.join(', ')}. Valid fields: ${Object.keys(current).join(', ')}` };
       }
 
-      // 4) Build FormData with every field. Null → empty string (TP
-      // serialiser doesn't accept null literal).
+      // 4) Build FormData. CRITICAL: send ONLY the fields the page's own
+      // edit form submits (captured from a real /adc/edit_nfr_detail POST).
+      // get_nfr_detail returns ~22 EXTRA read-only/derived fields (all the
+      // *_due dates, *_doc links, nfr_test_task_*, qa_test_result, etc.) that
+      // the page NEVER posts; including them (as empty strings) makes the
+      // backend silently drop the save — the bug behind "edit had no effect".
+      // Whitelist below = exact field set from the page's FormData.
+      const EDITABLE = [
+        'id', 'release', 'subject', 'source', 'category', 'status', 'progress',
+        'priority', 'git', 'git_branch', 'pmdb', 'pd_assignee', 'backend_assignee',
+        'frontend_assignee', 'at_assignee', 'qa_assignee', 'nfr_owner', 'created_time',
+        'doc', 'description', 'doc_status', 'mantis_dev', 'mantis_nfr', 'mantis_doc',
+        'merged', 'story_point_backend', 'story_point_frontend',
+        'conceptual_design_progress', 'ux_design_progress',
+        'dev_implement_backend_progress', 'dev_implement_frontend_progress',
+        'dev_integration_progress', 'qa_test_progress', 'qa_toi_progress',
+      ];
       const fd = new FormData();
-      for (const [k, v] of Object.entries(merged)) {
+      for (const k of EDITABLE) {
+        const v = merged[k];
         if (v == null) fd.append(k, '');
         else if (typeof v === 'object') fd.append(k, JSON.stringify(v));
         else fd.append(k, String(v));
@@ -669,6 +690,660 @@ tools:
         changed: Object.keys(patch).filter(k => !declined.includes(k)),
         declined_fields: declined,
         result: json,
+      };
+
+  # ═══════════════ Automation module ═══════════════
+  # Endpoints from docs/tp-automation-api.md (the /automation page's
+  # Automation.jsx contract). Same JWT-in-localStorage auth as the NFR
+  # tools above. The `user` field these endpoints want is the TP login
+  # name (usedby lists show names like "alice"), derived from the JWT
+  # payload (username → email); pass `user` explicitly if that's wrong.
+
+  # ─────────── list_automation_versions ───────────
+  list_automation_versions:
+    description: |
+      List the FortiNAC versions the automation pipeline tracks
+      (populates the version dropdown). GET /adc/automation-verion/.
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const r = await fetch(`${apiBase}/adc/automation-verion/`, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}` };
+      return await r.json();
+
+  # ─────────── list_automation_labs ───────────
+  list_automation_labs:
+    description: |
+      List the automation testbeds (labs) the calling user can see —
+      owned or shared. Each entry has a live `status` ("Available" /
+      "Running"). POST /adc/get_automation_lab { user }.
+    parameters:
+      user:
+        type: string
+        description: "TP login name. Default: derived from JWT. Override if the lab list comes back empty."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      let user = (args.user || '').trim();
+      if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+      if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
+      const r = await fetch(`${apiBase}/adc/get_automation_lab`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ user }),
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      return { user, labs: await r.json() };
+
+  # ─────────── list_testcases ───────────
+  list_testcases:
+    description: |
+      List available pytest test cases as a module → file → test tree.
+      GET /adc/get_testcases.
+
+      SIDE-EFFECT: the backend pulls the latest `main` of TP's local
+      test-framework clone before parsing. Harmless in normal use, but
+      it will rebase any branch a developer is hand-testing on the TP
+      host. Don't call this on a tight loop.
+
+      `flatten: true` → return a flat list of pytest ids
+      ("tests/<module>/<file>::<test>") ready to pass to run_pytest.
+      `module` → return only that top-level module's subtree/ids.
+    parameters:
+      flatten:
+        type: boolean
+        default: false
+        description: "true = flat pytest-id list instead of the nested tree."
+      module:
+        type: string
+        description: "Restrict to one top-level module (e.g. 'L2'). Empty = all."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const r = await fetch(`${apiBase}/adc/get_testcases`, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}` };
+      const body = await r.json();
+      // tree shape: { tests: { <module>: { <file.py>: [<test>, ...] } } }
+      const root = body && body.tests ? body.tests : body;
+      const rootKey = body && body.tests ? 'tests' : '';
+      const modFilter = (args.module || '').trim();
+      if (!args.flatten) {
+        if (modFilter) return { module: modFilter, tree: (root || {})[modFilter] ?? null };
+        return body;
+      }
+      const ids = [];
+      for (const [mod, files] of Object.entries(root || {})) {
+        if (modFilter && mod !== modFilter) continue;
+        if (!files || typeof files !== 'object') continue;
+        for (const [file, tests] of Object.entries(files)) {
+          const base = [rootKey, mod, file].filter(Boolean).join('/');
+          if (Array.isArray(tests) && tests.length) {
+            for (const t of tests) ids.push(`${base}::${t}`);
+          } else {
+            ids.push(base);
+          }
+        }
+      }
+      return { module: modFilter || 'all', count: ids.length, testcase_ids: ids };
+
+  # ─────────── run_pytest (destructive) ───────────
+  run_pytest:
+    description: |
+      Kick off a pytest run on an automation lab. Asynchronous — returns
+      an exec_id you then poll with get_test_execution. POST
+      /adc/pytest_run { user, lab, testcase[], argument }.
+
+      `testcase` is a list of pytest ids (from list_testcases flatten=true),
+      e.g. ["tests/L2/test_l2_radius.py::test_basic_auth"]. A bare file
+      ("tests/L2/test_l2_radius.py") or dir ("tests/L2/") runs everything
+      under it.
+
+      `argument` is raw pytest CLI flags injected verbatim (-vv, -x,
+      -k 'expr', --collect-only, marker expressions, etc.).
+
+      The lab must be owned by / shared with you and not already Running.
+      On lab conflict the result has conflict_labs + usable_labs instead
+      of exec_id.
+    destructive: true
+    parameters:
+      lab:
+        type: string
+        required: true
+        description: "AT lab name (from list_automation_labs). Comma-separate for multiple ('L2Mode_7,L2Mode_9')."
+      testcase:
+        type: json
+        required: true
+        description: "List of pytest ids (or a single string / CSV). e.g. [\"tests/L2/test_l2_radius.py::test_basic_auth\"]."
+      argument:
+        type: string
+        default: ""
+        description: "Raw pytest CLI args, e.g. \"-vv -x\" or \"-k 'radius and not flaky'\". Empty = none."
+      user:
+        type: string
+        description: "TP login name. Default: derived from JWT."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      let user = (args.user || '').trim();
+      if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+      if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
+      const lab = String(args.lab || '').trim();
+      if (!lab) return { _error: 'lab is required' };
+      // Normalize testcase → array of strings (accept array, JSON string, or CSV)
+      let tc = args.testcase;
+      if (typeof tc === 'string') {
+        const s = tc.trim();
+        if (s.startsWith('[')) { try { tc = JSON.parse(s); } catch { tc = s.split(',').map(x => x.trim()).filter(Boolean); } }
+        else tc = s.split(',').map(x => x.trim()).filter(Boolean);
+      }
+      if (!Array.isArray(tc) || tc.length === 0) return { _error: 'testcase must be a non-empty list of pytest ids' };
+      tc = tc.map(String);
+      const body = JSON.stringify({ user, lab, testcase: tc, argument: String(args.argument || '') });
+      const r = await fetch(`${apiBase}/adc/pytest_run`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body,
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
+      const json = await r.json().catch(() => ({}));
+      if (json && json.conflict_labs) return { ok: false, conflict: true, conflict_labs: json.conflict_labs, usable_labs: json.usable_labs, _hint: 'Lab busy with another run; pick a usable_lab or wait.' };
+      if (json && json.error) return { _error: json.error };
+      return { ok: true, lab, testcase: tc, argument: String(args.argument || ''), exec_id: json.exec_id ?? json.id ?? null, result: json };
+
+  # ─────────── get_test_results ───────────
+  get_test_results:
+    description: |
+      List the calling user's recent test executions with computed
+      progress %. POST /adc/get_test_result { user }. Use this for "how
+      are my runs doing"; use get_test_execution for one run's detail.
+    parameters:
+      user:
+        type: string
+        description: "TP login name. Default: derived from JWT."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      let user = (args.user || '').trim();
+      if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+      if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
+      const r = await fetch(`${apiBase}/adc/get_test_result`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ user }),
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      const rows = await r.json();
+      // report/log paths are server-relative; surface absolute URLs.
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          if (row && row.report_file_path) row.report_url = `${location.protocol}//${location.hostname}:8000/${String(row.report_file_path).replace(/^\//, '')}`;
+          if (row && row.log_file_path) row.log_url = `${location.protocol}//${location.hostname}:8000/${String(row.log_file_path).replace(/^\//, '')}`;
+        }
+      }
+      return { user, results: rows };
+
+  # ─────────── get_test_execution ───────────
+  get_test_execution:
+    description: |
+      Fetch one execution's full record (steps, counts, environment,
+      timestamps, status, progress) for a run id from run_pytest or
+      get_test_results. POST /adc/get_test_execution_by_id { id }.
+    parameters:
+      id:
+        type: number
+        required: true
+        description: "Execution id (exec_id from run_pytest, or id from get_test_results)."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      if (args.id == null) return { _error: 'id is required' };
+      const r = await fetch(`${apiBase}/adc/get_test_execution_by_id`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ id: Number(args.id) }),
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (r.status === 404) return { _error: `Execution ${args.id} not found` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      return await r.json();
+
+  # ─────────── lock_lab (destructive) ───────────
+  lock_lab:
+    description: |
+      Lock or unlock an automation testbed to serialize exclusive
+      hardware access. POST /adc/automation_lock { action, user, name }.
+      `action` is "lock" or "unlock". Lock before a manual session;
+      always unlock when done so others aren't blocked.
+    destructive: true
+    parameters:
+      name:
+        type: string
+        required: true
+        description: "Testbed name (from list_automation_labs)."
+      action:
+        type: select
+        options: ["lock", "unlock"]
+        default: "lock"
+        description: "lock = mark in-use; unlock = release."
+      user:
+        type: string
+        description: "TP login name. Default: derived from JWT."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      let user = (args.user || '').trim();
+      if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+      if (!user) return { _error: 'Could not determine TP username; pass `user` explicitly.' };
+      const name = String(args.name || '').trim();
+      if (!name) return { _error: 'name is required' };
+      const action = (args.action === 'unlock') ? 'unlock' : 'lock';
+      const r = await fetch(`${apiBase}/adc/automation_lock`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ action, user, name }),
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      const json = await r.json().catch(() => ({}));
+      return { ok: true, action, name, user, result: json };
+
+  # ─────────── kill_test_execution (destructive) ───────────
+  kill_test_execution:
+    description: |
+      Abort a running execution. The row stays in the DB with a terminal
+      status; the pytest subprocess is sent SIGTERM. POST
+      /adc/test_exec_kill { id }.
+    destructive: true
+    parameters:
+      id:
+        type: number
+        required: true
+        description: "Execution id to abort."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      if (args.id == null) return { _error: 'id is required' };
+      const r = await fetch(`${apiBase}/adc/test_exec_kill`, {
+        method: 'POST',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ id: Number(args.id) }),
+      });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      const json = await r.json().catch(() => ({}));
+      return { ok: true, killed_exec_id: Number(args.id), result: json };
+
+  # ═══════════════ NAC upgrade ═══════════════
+  # An automation run targeting a specific build needs the testbed
+  # upgraded first. Two modes: per-device (upgrade_device) and whole
+  # testbed (upgrade_lab). Both are async — poll check_upgrade_status.
+  # docs/tp-automation-api.md "NAC upgrade APIs".
+
+  # ─────────── upgrade_lab (destructive) ───────────
+  upgrade_lab:
+    description: |
+      Upgrade every NAC/NCM device in an automation testbed at once.
+      POST /adc/nac-upgrade-testbed/ (multipart). Asynchronous — the
+      call returns once the jobs are queued; poll completion with
+      check_lab_upgrade_status (preferred) or check_upgrade_status
+      per IP.
+
+      Identify the testbed by `lab` (name) — its deployinfo (device →
+      ip map) is resolved from list_automation_labs — or pass
+      `deployinfo` directly as a JSON object/string.
+
+      upgrade_type:
+        GA      → latest GA image (no extra field)
+        build   → a specific build; requires build_number (e.g. 7.6.6.0123)
+        command → raw upgrade CLI; requires command
+      ('file' mode isn't supported here — no way to attach an image
+      from chat.)
+
+      NOTE (from the API docs): testbed-mode `build` does NOT update
+      is_upgrading while running — it only writes SUCCESS at the end.
+      For live progress on a build upgrade, read the `log` field from
+      check_upgrade_status instead of trusting is_upgrading.
+    destructive: true
+    parameters:
+      lab:
+        type: string
+        description: "Testbed name (from list_automation_labs). Used to resolve deployinfo. Omit if you pass deployinfo directly."
+      deployinfo:
+        type: json
+        description: "Device map { dev1, ip1, dev2, ip2, ... }. Optional if `lab` is given and the lab record carries deployinfo."
+      upgrade_type:
+        type: select
+        options: ["command", "build", "GA"]
+        default: "command"
+        description: "command (the common path here) / build / GA."
+      build_number:
+        type: string
+        description: "Required when upgrade_type=build, e.g. '7.6.6.0123'."
+      command:
+        type: string
+        description: |
+          Required when upgrade_type=command. The raw NAC CLI upgrade
+          command, run on every NAC/NCM in the testbed. Typical form
+          (scp the built image off the jenkins server and restore):
+          'execute restore image scp /var/lib/jenkins/jobs/fortinac-build-7.6-token/builds/17/archive/nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out 10.15.33.5 jenkins fortinet'
+          (the IP is the scp SOURCE server; 'jenkins fortinet' = scp user/pass).
+      user:
+        type: string
+        description: "TP login name (for lab resolution). Default: derived from JWT."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
+      const upgrade_type = ['GA', 'build', 'command'].includes(args.upgrade_type) ? args.upgrade_type : 'build';
+      if (upgrade_type === 'build' && !String(args.build_number || '').trim()) return { _error: 'build_number is required when upgrade_type=build' };
+      if (upgrade_type === 'command' && !String(args.command || '').trim()) return { _error: 'command is required when upgrade_type=command' };
+
+      // Resolve deployinfo: explicit arg wins, else look it up by lab name.
+      let deploy = args.deployinfo;
+      if (typeof deploy === 'string' && deploy.trim()) { try { deploy = JSON.parse(deploy); } catch { return { _error: 'deployinfo is not valid JSON' }; } }
+      if (!deploy || typeof deploy !== 'object') {
+        const lab = String(args.lab || '').trim();
+        if (!lab) return { _error: 'Pass `lab` (to resolve deployinfo) or `deployinfo` directly.' };
+        let user = (args.user || '').trim();
+        if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+        const lr = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ user }) });
+        if (!lr.ok) return { _error: `Could not load labs to resolve deployinfo: HTTP ${lr.status}` };
+        const labs = await lr.json();
+        const row = Array.isArray(labs) ? labs.find(l => l && l.name === lab) : null;
+        if (!row) return { _error: `Lab '${lab}' not found in your labs.` };
+        let di = row.deployinfo;
+        if (typeof di === 'string') { try { di = JSON.parse(di); } catch {} }
+        if (!di || typeof di !== 'object') return { _error: `Lab '${lab}' has no usable deployinfo; pass deployinfo explicitly.`, _lab_row: row };
+        deploy = di;
+      }
+
+      const fd = new FormData();
+      fd.append('deployinfo', JSON.stringify(deploy));
+      fd.append('upgrade_type', upgrade_type);
+      if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
+      if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
+
+      const r = await fetch(`${apiBase}/adc/nac-upgrade-testbed/`, { method: 'POST', headers: hdr, credentials: 'include', body: fd });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
+      const json = await r.json().catch(() => ({}));
+      // Surface the NAC/NCM IPs we just queued so the caller can poll.
+      const ips = [];
+      for (const [k, v] of Object.entries(deploy)) {
+        const m = /^dev(\d+)$/.exec(k);
+        if (m && /nac|ncm/i.test(String(v))) { const ip = deploy[`ip${m[1]}`]; if (ip) ips.push(String(ip)); }
+      }
+      const sync = (upgrade_type === 'command' || upgrade_type === 'file');
+      return { ok: true, upgrade_type, build_number: args.build_number || null, queued_ips: ips, result: json, _hint: sync ? 'command/file run SYNCHRONOUSLY — this returned only after every device finished, so the upgrade is already done (check_lab_upgrade_status reflects the final state). Note: a slow restore can take minutes; the call blocks the whole time.' : 'GA/build are async — poll check_lab_upgrade_status with the same lab/deployinfo.' };
+
+  # ─────────── upgrade_device (destructive) ───────────
+  upgrade_device:
+    description: |
+      Upgrade a single FortiNAC device by IP. POST /adc/nac-upgrade/
+      (multipart). Asynchronous — poll check_upgrade_status { ip }.
+
+      upgrade_type: GA (no extra field) / build (build_number) /
+      command (command). 'file' mode not supported here.
+    destructive: true
+    parameters:
+      ip:
+        type: string
+        required: true
+        description: "Target device IP."
+      upgrade_type:
+        type: select
+        options: ["command", "build", "GA"]
+        default: "command"
+      build_number:
+        type: string
+        description: "Required when upgrade_type=build, e.g. '7.6.6.0123'."
+      command:
+        type: string
+        description: |
+          Required when upgrade_type=command. Raw NAC CLI upgrade cmd, e.g.
+          'execute restore image scp /var/lib/jenkins/jobs/fortinac-build-7.6-token/builds/17/archive/nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out 10.15.33.5 jenkins fortinet'
+          (IP = scp source server; 'jenkins fortinet' = scp user/pass).
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const ip = String(args.ip || '').trim();
+      if (!ip) return { _error: 'ip is required' };
+      const upgrade_type = ['GA', 'build', 'command'].includes(args.upgrade_type) ? args.upgrade_type : 'build';
+      if (upgrade_type === 'build' && !String(args.build_number || '').trim()) return { _error: 'build_number is required when upgrade_type=build' };
+      if (upgrade_type === 'command' && !String(args.command || '').trim()) return { _error: 'command is required when upgrade_type=command' };
+      const fd = new FormData();
+      fd.append('ip', ip);
+      fd.append('upgrade_type', upgrade_type);
+      if (upgrade_type === 'build') fd.append('build_number', String(args.build_number).trim());
+      if (upgrade_type === 'command') fd.append('command', String(args.command).trim());
+      const r = await fetch(`${apiBase}/adc/nac-upgrade/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include', body: fd });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
+      const json = await r.json().catch(() => ({}));
+      const sync = (upgrade_type === 'command' || upgrade_type === 'file');
+      return { ok: true, ip, upgrade_type, build_number: args.build_number || null, result: json, _hint: sync ? 'command/file run synchronously — already done when this returns (may take minutes).' : 'GA/build are async — poll check_upgrade_status { ip }.' };
+
+  # ─────────── check_upgrade_status ───────────
+  check_upgrade_status:
+    description: |
+      Poll the upgrade status of one device by IP. POST
+      /adc/check-upgrade-status/ { ip }. Returns is_upgrading,
+      last_task_status (SUCCESS/FAILURE/PENDING/PROGRESS), build/image
+      info, updated_at, and a `log` tail.
+
+      CAVEAT (testbed-mode build): is_upgrading stays false during a
+      testbed `build` upgrade — it only flips on the final SUCCESS.
+      For live progress, read the `log` field. (Set include_log=false
+      to drop the potentially-large log from the response.)
+    parameters:
+      ip:
+        type: string
+        required: true
+        description: "Device IP to poll."
+      include_log:
+        type: boolean
+        default: true
+        description: "false = strip the `log` field (can be large)."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const ip = String(args.ip || '').trim();
+      if (!ip) return { _error: 'ip is required' };
+      const r = await fetch(`${apiBase}/adc/check-upgrade-status/`, { method: 'POST', headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ip }) });
+      if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (r.status === 404) return { ip, found: false, _note: 'No upgrade record for this IP (never upgraded, or testbed-GA stub).' };
+      if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
+      const json = await r.json().catch(() => ({}));
+      if (args.include_log === false && json && typeof json === 'object') delete json.log;
+      return json;
+
+  # ─────────── check_lab_upgrade_status ───────────
+  check_lab_upgrade_status:
+    description: |
+      Answer "is the testbed upgrade finished?" Resolves the NAC/NCM
+      devices in a testbed (by `lab` name or explicit `deployinfo`),
+      polls check-upgrade-status for each, and aggregates a single
+      done/in-progress verdict.
+
+      `done` is true when every device's last_task_status is terminal
+      (SUCCESS or FAILURE) and none is is_upgrading. Because testbed
+      `build` upgrades don't set is_upgrading mid-run, a device whose
+      status is still the PREVIOUS build's SUCCESS can look "done"
+      prematurely — cross-check last_build_number against the build
+      you requested when in doubt.
+    parameters:
+      lab:
+        type: string
+        description: "Testbed name (resolves deployinfo via list_automation_labs)."
+      deployinfo:
+        type: json
+        description: "Device map, if you'd rather pass it directly than resolve by lab."
+      include_log:
+        type: boolean
+        default: false
+        description: "true = keep each device's `log` tail (large). Default false."
+      user:
+        type: string
+        description: "TP login name (for lab resolution). Default: derived from JWT."
+    page:
+      url: "{base_url}/automation"
+      on_target: "/automation"
+    script: |
+      const jwt = localStorage.token;
+      if (!jwt) return { _error: 'Not logged in to TP.' };
+      try {
+        const _p = JSON.parse(atob(jwt.split('.')[1]));
+        if (_p?.exp && _p.exp * 1000 < Date.now()) return { _error: 'JWT expired. Open the TP tab and re-login, then retry.' };
+      } catch {}
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
+      const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
+
+      let deploy = args.deployinfo;
+      if (typeof deploy === 'string' && deploy.trim()) { try { deploy = JSON.parse(deploy); } catch { return { _error: 'deployinfo is not valid JSON' }; } }
+      if (!deploy || typeof deploy !== 'object') {
+        const lab = String(args.lab || '').trim();
+        if (!lab) return { _error: 'Pass `lab` or `deployinfo`.' };
+        let user = (args.user || '').trim();
+        if (!user) { try { const p = JSON.parse(atob(jwt.split('.')[1])); user = p.username || p.email || ''; } catch {} }
+        const lr = await fetch(`${apiBase}/adc/get_automation_lab`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ user }) });
+        if (!lr.ok) return { _error: `Could not load labs: HTTP ${lr.status}` };
+        const labs = await lr.json();
+        const row = Array.isArray(labs) ? labs.find(l => l && l.name === lab) : null;
+        if (!row) return { _error: `Lab '${lab}' not found.` };
+        let di = row.deployinfo;
+        if (typeof di === 'string') { try { di = JSON.parse(di); } catch {} }
+        if (!di || typeof di !== 'object') return { _error: `Lab '${lab}' has no usable deployinfo; pass deployinfo explicitly.` };
+        deploy = di;
+      }
+
+      // Collect NAC/NCM IPs (dev<N> value contains nac|ncm → ip<N>).
+      const targets = [];
+      for (const [k, v] of Object.entries(deploy)) {
+        const m = /^dev(\d+)$/.exec(k);
+        if (m && /nac|ncm/i.test(String(v))) { const ip = deploy[`ip${m[1]}`]; if (ip) targets.push({ dev: String(v), ip: String(ip) }); }
+      }
+      if (!targets.length) return { _error: 'No NAC/NCM devices found in deployinfo.', deployinfo: deploy };
+
+      const devices = [];
+      for (const t of targets) {
+        try {
+          const r = await fetch(`${apiBase}/adc/check-upgrade-status/`, { method: 'POST', headers: { ...hdr, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ip: t.ip }) });
+          if (r.status === 404) { devices.push({ ...t, found: false, last_task_status: null, is_upgrading: false }); continue; }
+          if (!r.ok) { devices.push({ ...t, _error: `HTTP ${r.status}` }); continue; }
+          const j = await r.json().catch(() => ({}));
+          if (args.include_log !== true && j && typeof j === 'object') delete j.log;
+          devices.push({ ...t, found: true, is_upgrading: !!j.is_upgrading, last_task_status: j.last_task_status, last_build_number: j.last_build_number, last_image_name: j.last_image_name, updated_at: j.updated_at, ...(args.include_log === true ? { log: j.log } : {}) });
+        } catch (e) { devices.push({ ...t, _error: String(e) }); }
+      }
+      const anyUpgrading = devices.some(d => d.is_upgrading);
+      const allTerminal = devices.every(d => !d.is_upgrading && (d.last_task_status === 'SUCCESS' || d.last_task_status === 'FAILURE' || d.found === false));
+      const anyFailure = devices.some(d => d.last_task_status === 'FAILURE');
+      return {
+        lab: args.lab || null,
+        device_count: devices.length,
+        done: allTerminal && !anyUpgrading,
+        any_upgrading: anyUpgrading,
+        any_failure: anyFailure,
+        devices,
       };
 
 test:

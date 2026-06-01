@@ -6,9 +6,9 @@
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
-      "version": "0.4.6",
+      "version": "0.5.0",
       "author": "forge",
-      "description": "FortiNAC TP browser connector — read NFRs (CA & NCM / Device Integration / Agent modules) using your logged-in session. Automation module ships later.",
+      "description": "FortiNAC TP browser connector — NFR read/edit + weekly status + comments, plus full automation (labs, testcases, pytest runs, results, NAC upgrade + status polling) — all via your logged-in session.",
       "min_forge_version": "0.9.17"
     },
     {
