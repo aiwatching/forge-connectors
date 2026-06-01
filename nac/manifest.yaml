@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device (direct)
 icon: 🛡️
-version: "0.2.0"
+version: "0.3.0"
 author: forge
 category: connector
 mode: server-side
@@ -55,8 +55,17 @@ tools:
       (~3-5 min) and comes back on the new build — verify with
       get_version afterwards (compare build number).
 
-      Returns from_version / to_version parsed from the upgrade banner.
-      Does NOT wait for the reboot to finish.
+      Returns from_version / to_version / target_build, and `rebooted`
+      ONLY if the box auto-rebooted (FortiNAC's restore does this
+      inconsistently — sometimes it reboots itself, sometimes it just
+      prints "Please reboot").
+
+      IMPORTANT — after a successful upgrade, check captured.rebooted:
+        • present  → it rebooted itself; the registered watch will
+          confirm the new build. Done.
+        • ABSENT   → image is written but NOT yet running. You MUST call
+          `reboot` (same host) to switch to the new build, otherwise the
+          device stays on the old version and the watch times out.
     destructive: true
     protocol: ssh
     parameters:
@@ -104,6 +113,7 @@ tools:
         from_version: "from version ([0-9][0-9.]+)"
         to_version: "to version ([0-9][0-9.]+)"
         target_build: "build([0-9]+)"          # from the echoed image filename — the build we're moving to
+        rebooted: "(Rebooting primary server|system is going down for reboot)"   # present ONLY if it auto-rebooted
       timeout_sec: 240
     # Long-task watch: upgrade returns when the image is written, but the
     # box then reboots (~3-5 min). The watch polls get_version until the
@@ -202,5 +212,44 @@ tools:
       commands:
         - "{args.command}"
         - "exit"
+      success_on_close: true
+      timeout_sec: 60
+
+  # ─────────── reboot (destructive) ───────────
+  reboot:
+    description: |
+      Reboot a FortiNAC appliance — `execute reboot` (auto-answers the
+      y/n confirm). The SSH connection drops as the box goes down; that
+      is treated as success.
+
+      Primary use: finish an `upgrade` whose image was written but which
+      did NOT auto-reboot (upgrade's result has no `captured.rebooted`).
+      After this reboot the device boots the new build, and any pending
+      upgrade watch will confirm it. ~3-5 min to come back.
+    destructive: true
+    protocol: ssh
+    parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC management IP/hostname to reboot."
+      port:
+        type: string
+        description: "SSH port. Omit to use the connector default (22)."
+      username:
+        type: string
+        description: "SSH user. Omit to use the connector default (admin)."
+      password:
+        type: string
+        description: "SSH password. Omit to use the connector's saved default."
+    ssh:
+      prompt_regex: "#[ \\t]*$"
+      commands:
+        - "execute reboot"
+      auto_answer:
+        - match: "\\(y/?n\\)|\\(yes/no\\)|do you want to continue|reboot the system"
+          send: "yes"
+      done_when: "system is going down for reboot|Rebooting|Restarting system|going down"
+      fail_when: "Permission denied|command parse error|Unknown action"
       success_on_close: true
       timeout_sec: 60
