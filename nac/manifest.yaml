@@ -1,0 +1,152 @@
+id: nac
+name: FortiNAC Device (direct)
+icon: 🛡️
+version: "0.1.0"
+author: forge
+category: connector
+mode: server-side
+description: |
+  Direct management of a FortiNAC appliance over SSH (and, later, its
+  REST API) — no TP platform in the middle. Built because driving NAC
+  upgrades through TP's automation page proved unstable.
+
+  CLI part (protocol: ssh, via PTY):
+    - upgrade: run `execute restore image scp …`, auto-answer the
+      (y/N) confirmations, wait until the image is written, return the
+      from/to versions. The device reboots itself afterwards.
+    - get_version: read the running version/build (`get system status`).
+    - run_command: run any single CLI command and capture output.
+
+  Provide host / port / username (default admin) / password in settings.
+  API part (protocol: http) is a later addition once the REST surface
+  is mapped.
+
+settings:
+  host:
+    type: string
+    label: NAC host/IP
+    description: "Management IP or hostname of the FortiNAC appliance, e.g. 10.15.52.152."
+    required: true
+  port:
+    type: string
+    label: SSH port
+    description: "SSH port. Default 22."
+    default: "22"
+  username:
+    type: string
+    label: Username
+    description: "SSH user. FortiNAC default is admin."
+    default: "admin"
+    required: true
+  password:
+    type: secret
+    label: Password
+    description: "SSH password (encrypted at rest; fed to the login prompt, never logged)."
+    required: true
+
+tools:
+
+  # ─────────── upgrade (destructive) ───────────
+  upgrade:
+    description: |
+      Upgrade the FortiNAC firmware by restoring an image over SCP, the
+      same flow you run by hand:
+        execute restore image scp <image_path> <scp_host> <scp_user> <scp_pass>
+      The tool SSHes in, sends that command, auto-answers the (y/N)
+      confirmations (including the signature-validation warning for dev
+      builds), and streams the restore until the image is written
+      ("Done installing image"). The appliance then REBOOTS on its own
+      (~3-5 min) and comes back on the new build — verify with
+      get_version afterwards (compare build number).
+
+      Returns from_version / to_version parsed from the upgrade banner.
+      Does NOT wait for the reboot to finish.
+    destructive: true
+    protocol: ssh
+    parameters:
+      image_path:
+        type: string
+        required: true
+        description: "Absolute path of the .out image ON the scp source server, e.g. /var/lib/jenkins/jobs/fortinac-build-7.6-token/builds/17/archive/nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out"
+      scp_host:
+        type: string
+        default: "10.15.33.5"
+        description: "SCP source server holding the image (the jenkins build host)."
+      scp_user:
+        type: string
+        default: "jenkins"
+        description: "SCP username."
+      scp_pass:
+        type: string
+        default: "fortinet"
+        description: "SCP password."
+    ssh:
+      host: "{settings.host}"
+      port: "{settings.port}"
+      user: "{settings.username}"
+      password: "{settings.password}"
+      prompt_regex: "#[ \\t]*$"
+      commands:
+        - "execute restore image scp {args.image_path} {args.scp_host} {args.scp_user} {args.scp_pass}"
+      auto_answer:
+        - match: "\\(y/?N\\)|do you want to continue"
+          send: "y"
+      done_when: "Done installing image|Rebooting primary server"
+      fail_when: "No space left on device|Permission denied, please try again|Host key verification failed|command parse error|Unknown action"
+      capture:
+        from_version: "from version ([0-9][0-9.]+)"
+        to_version: "to version ([0-9][0-9.]+)"
+      timeout_sec: 240
+
+  # ─────────── get_version ───────────
+  get_version:
+    description: |
+      Read the running FortiNAC version via `get system status`. Returns
+      the full version string, the numeric build, firmware signature and
+      hostname. Use to confirm an upgrade landed: poll until `build`
+      matches the target (e.g. 6957) — the device is unreachable for a
+      few minutes mid-reboot, so expect connection errors until it's up.
+    protocol: ssh
+    parameters: {}
+    ssh:
+      host: "{settings.host}"
+      port: "{settings.port}"
+      user: "{settings.username}"
+      password: "{settings.password}"
+      prompt_regex: "#[ \\t]*$"
+      commands:
+        - "get system status"
+        - "exit"
+      done_when: "Version:\\s*FortiNAC[^\\n]*build[0-9]+"
+      capture:
+        version: "Version:\\s*(FortiNAC[^\\r\\n]+)"
+        build: "build([0-9]+)"
+        signature: "Firmware Signature:\\s*([^\\r\\n]+)"
+        hostname: "Hostname:\\s*([^\\r\\n]+)"
+      success_on_close: true
+      timeout_sec: 45
+
+  # ─────────── run_command ───────────
+  run_command:
+    description: |
+      Run a single FortiNAC CLI command and capture its output, e.g.
+      'get system ha', 'get system interface', 'diagnose ...'. For the
+      firmware version use get_version. For upgrades use upgrade (this
+      tool does NOT auto-answer (y/N) prompts).
+    protocol: ssh
+    parameters:
+      command:
+        type: string
+        required: true
+        description: "The CLI command to run (e.g. 'get system status')."
+    ssh:
+      host: "{settings.host}"
+      port: "{settings.port}"
+      user: "{settings.username}"
+      password: "{settings.password}"
+      prompt_regex: "#[ \\t]*$"
+      commands:
+        - "{args.command}"
+        - "exit"
+      success_on_close: true
+      timeout_sec: 60

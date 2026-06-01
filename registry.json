@@ -3,6 +3,15 @@
   "updated_at": "2026-05-28T00:00:00Z",
   "connectors": [
     {
+      "id": "nac",
+      "name": "FortiNAC Device (direct)",
+      "icon": "🛡️",
+      "version": "0.1.0",
+      "author": "forge",
+      "description": "Direct FortiNAC appliance management over SSH — firmware upgrade (execute restore image scp, auto-answers y/N), version check, and arbitrary CLI. Server-side via PTY. Provide host/port/user/password.",
+      "min_forge_version": "0.9.17"
+    },
+    {
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
