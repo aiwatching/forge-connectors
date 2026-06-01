@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device (direct)
 icon: 🛡️
-version: "0.1.0"
+version: "0.1.1"
 author: forge
 category: connector
 mode: server-side
@@ -89,8 +89,10 @@ tools:
       commands:
         - "execute restore image scp {args.image_path} {args.scp_host} {args.scp_user} {args.scp_pass}"
       auto_answer:
-        - match: "\\(y/?N\\)|do you want to continue"
-          send: "y"
+        # Intent `yes` → the runner reads each prompt's offered options and
+        # sends the right token (y for (y/N), yes for (yes/no)), explicitly.
+        - match: "\\(y/?n\\)|\\(yes/no\\)|do you want to continue"
+          send: "yes"
       done_when: "Done installing image|Rebooting primary server"
       fail_when: "No space left on device|Permission denied, please try again|Host key verification failed|command parse error|Unknown action"
       capture:
