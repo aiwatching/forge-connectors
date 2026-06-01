@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device (direct)
 icon: 🛡️
-version: "0.1.2"
+version: "0.1.3"
 author: forge
 category: connector
 mode: server-side
@@ -99,7 +99,7 @@ tools:
         - match: "\\(y/?n\\)|\\(yes/no\\)|do you want to continue"
           send: "yes"
       done_when: "Done installing image|Rebooting primary server"
-      fail_when: "No space left on device|Permission denied, please try again|Host key verification failed|command parse error|Unknown action"
+      fail_when: "No space left on device|Permission denied, please try again|Host key verification failed|command parse error|Unknown action|Invalid value for positional|^Usage: |Invalid server / port value"
       capture:
         from_version: "from version ([0-9][0-9.]+)"
         to_version: "to version ([0-9][0-9.]+)"
