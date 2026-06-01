@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.6.0"
+version: "0.7.0"
 author: forge
 category: connector
 mode: browser-side
@@ -28,6 +28,18 @@ description: |
     TP's automation page). Use the dedicated `nac` connector (direct
     SSH). TP now only exposes get_lab_devices to find a lab's NAC IP,
     which you then upgrade via nac.upgrade.
+
+  v0.7 — run_pytest + get_test_execution switched to the v2 automation
+    API (docs/tp-automation-api-v2.md). Endpoints, status enum, and
+    response shape all changed:
+      run_pytest          → POST /adc/automation/pytest/    (was /adc/pytest_run)
+      get_test_execution  → GET  /adc/automation/pytest/<id>/  (was POST /adc/get_test_execution_by_id)
+    Polling fields: status ∈ {Initiating, Running, Done, Failed,
+    Cancelled} — `Done` is terminal (pass/fail inferred from counts).
+    Counts (pass_count/fail_count/skip_count/error_count/total_count)
+    populated mid-run. Also: list_testcases flatten paths are now
+    relative to /root/fnac_auto/tests (no `tests/` prefix) — the v1
+    prefix double-pathed against the v2 server (`teststests/...`).
 
 settings:
   base_url:
@@ -694,10 +706,12 @@ tools:
       };
 
   # ═══════════════ Automation module ═══════════════
-  # Endpoints from docs/tp-automation-api.md (the /automation page's
-  # Automation.jsx contract). Same JWT-in-localStorage auth as the NFR
-  # tools above. The `user` field these endpoints want is the TP login
-  # name (usedby lists show names like "alice"), derived from the JWT
+  # Discovery/list endpoints are the legacy /adc/* set. run_pytest +
+  # get_test_execution use the v2 automation API (docs/tp-automation-
+  # api-v2.md): POST/GET /adc/automation/pytest/. Same JWT-in-
+  # localStorage auth as the NFR tools above. The `user` field these
+  # endpoints want is the TP login name (usedby lists show names
+  # like "alice"), derived from the JWT
   # payload (username → email); pass `user` explicitly if that's wrong.
 
   # ─────────── list_automation_versions ───────────
@@ -766,8 +780,10 @@ tools:
       it will rebase any branch a developer is hand-testing on the TP
       host. Don't call this on a tight loop.
 
-      `flatten: true` → return a flat list of pytest ids
-      ("tests/<module>/<file>::<test>") ready to pass to run_pytest.
+      `flatten: true` → return a flat list of pytest ids relative to
+      `/root/fnac_auto/tests` ("<module>/<file>::<test>") ready to pass
+      to run_pytest. (v2 automation API joins these onto the tests
+      repo root itself; do NOT include a leading `tests/`.)
       `module` → return only that top-level module's subtree/ids.
     parameters:
       flatten:
@@ -794,7 +810,6 @@ tools:
       const body = await r.json();
       // tree shape: { tests: { <module>: { <file.py>: [<test>, ...] } } }
       const root = body && body.tests ? body.tests : body;
-      const rootKey = body && body.tests ? 'tests' : '';
       const modFilter = (args.module || '').trim();
       if (!args.flatten) {
         if (modFilter) return { module: modFilter, tree: (root || {})[modFilter] ?? null };
@@ -805,7 +820,7 @@ tools:
         if (modFilter && mod !== modFilter) continue;
         if (!files || typeof files !== 'object') continue;
         for (const [file, tests] of Object.entries(files)) {
-          const base = [rootKey, mod, file].filter(Boolean).join('/');
+          const base = [mod, file].filter(Boolean).join('/');
           if (Array.isArray(tests) && tests.length) {
             for (const t of tests) ids.push(`${base}::${t}`);
           } else {
@@ -819,33 +834,53 @@ tools:
   run_pytest:
     description: |
       Kick off a pytest run on an automation lab. Asynchronous — returns
-      an exec_id you then poll with get_test_execution. POST
-      /adc/pytest_run { user, lab, testcase[], argument }.
+      an `exec_id` you then poll with get_test_execution. v2 endpoint:
+      POST /adc/automation/pytest/ { user, lab, testcase[], argument,
+      extra_pytest_options }.
 
-      `testcase` is a list of pytest ids (from list_testcases flatten=true),
-      e.g. ["tests/L2/test_l2_radius.py::test_basic_auth"]. A bare file
-      ("tests/L2/test_l2_radius.py") or dir ("tests/L2/") runs everything
-      under it.
+      `testcase` is a list of pytest ids RELATIVE to the tests repo
+      root `/root/fnac_auto/tests`, e.g.
+      ["L2/test_l2_radius.py::test_basic_auth"] or
+      ["/Tests_CLI/test_cli_sanity.py::TestGetBasic::test_get_system_status"].
+      Leading `/` is optional. Do NOT include a `tests/` prefix — TP
+      joins onto the tests repo root itself (the old prefix produced
+      `/root/fnac_auto/teststests/...`).
+      A bare file ("L2/test_l2_radius.py") or dir ("L2") runs every
+      test under it. Use `argument: "--collect-only"` for a dry run.
 
-      `argument` is raw pytest CLI flags injected verbatim (-vv, -x,
-      -k 'expr', --collect-only, marker expressions, etc.).
+      `argument` is raw pytest CLI flags injected between the testcase
+      paths and the framework's `--html`/`--rack-file` flags (-vv,
+      --tb=short, -k 'expr', --maxfail=N, marker expressions, etc.).
 
-      The lab must be owned by / shared with you and not already Running.
-      On lab conflict the result has conflict_labs + usable_labs instead
-      of exec_id.
+      `extra_pytest_options` is appended AFTER the framework flags on
+      the real run only (skipped during the --collect-only dry-run
+      phase). Use for env-specific flags.
+
+      The lab must be owned by / shared with you and not already mid-
+      run. HTTP 409 = another execution is `Running` or `Initiating`
+      on this lab (per-testbed serialization).
+
+      To poll: use start_watch on this connector's get_test_execution
+      with `done_match: { path: "status", equals: "Done" }`. `Done` is
+      terminal regardless of pass/fail — read pass_count/fail_count/
+      error_count to classify the outcome.
     destructive: true
     parameters:
       lab:
         type: string
-        description: "AT lab name (from list_automation_labs), e.g. 'AT16_Combined_FSW'. Comma-separate to span labs ('L2Mode_7,L2Mode_9'). If omitted and you own exactly one lab, it's auto-selected; if you own several, the tool returns the list so you can pick."
+        description: "AT lab name (from list_automation_labs), e.g. 'AT16_Combined_FSW'. If omitted and you own exactly one lab, it's auto-selected; if you own several, the tool returns the list so you can pick."
       testcase:
         type: json
         required: true
-        description: "List of pytest ids (or a single string / CSV). e.g. [\"tests/L2/test_l2_radius.py::test_basic_auth\"]."
+        description: "List of pytest ids relative to /root/fnac_auto/tests (or a single string / CSV). e.g. [\"L2/test_l2_radius.py::test_basic_auth\"]. NO `tests/` prefix."
       argument:
         type: string
         default: ""
-        description: "Raw pytest CLI args, e.g. \"-vv -x\" or \"-k 'radius and not flaky'\". Empty = none."
+        description: "Raw pytest CLI args, e.g. \"-vv --tb=short\" or \"-k 'radius and not flaky'\". Empty = none."
+      extra_pytest_options:
+        type: string
+        default: ""
+        description: "Appended after --html/--rack-file on the real run (not the --collect-only dry-run). Env-specific flags only."
       user:
         type: string
         description: "TP login name. Default: derived from JWT."
@@ -884,19 +919,23 @@ tools:
       }
       if (!Array.isArray(tc) || tc.length === 0) return { _error: 'testcase must be a non-empty list of pytest ids' };
       tc = tc.map(String);
-      const body = JSON.stringify({ user, lab, testcase: tc, argument: String(args.argument || '') });
-      const r = await fetch(`${apiBase}/adc/pytest_run`, {
+      const argument = String(args.argument || '');
+      const extra = String(args.extra_pytest_options || '');
+      const body = JSON.stringify({ user, lab, testcase: tc, argument, extra_pytest_options: extra });
+      const r = await fetch(`${apiBase}/adc/automation/pytest/`, {
         method: 'POST',
         headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
         credentials: 'include',
         body,
       });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
+      if (r.status === 409) {
+        const j = await r.json().catch(() => ({}));
+        return { ok: false, conflict: true, lab, _error: j.error || `Lab '${lab}' is busy (Running or Initiating). Wait or pick another lab.` };
+      }
       if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 500) };
       const json = await r.json().catch(() => ({}));
-      if (json && json.conflict_labs) return { ok: false, conflict: true, conflict_labs: json.conflict_labs, usable_labs: json.usable_labs, _hint: 'Lab busy with another run; pick a usable_lab or wait.' };
-      if (json && json.error) return { _error: json.error };
-      return { ok: true, lab, testcase: tc, argument: String(args.argument || ''), exec_id: json.exec_id ?? json.id ?? null, result: json };
+      return { ok: true, lab, testcase: tc, argument, extra_pytest_options: extra, exec_id: json.exec_id ?? null, status: json.status ?? null, testcase_count: json.testcase_count ?? tc.length, result: json };
 
   # ─────────── get_test_results ───────────
   get_test_results:
@@ -943,9 +982,28 @@ tools:
   # ─────────── get_test_execution ───────────
   get_test_execution:
     description: |
-      Fetch one execution's full record (steps, counts, environment,
-      timestamps, status, progress) for a run id from run_pytest or
-      get_test_results. POST /adc/get_test_execution_by_id { id }.
+      Fetch one execution's live status + counts + log_tail. v2
+      endpoint: GET /adc/automation/pytest/<exec_id>/.
+
+      Response fields:
+        status        → Initiating | Running | Done | Failed | Cancelled
+                        (Done is terminal — success/failure inferred
+                        from counts; Failed/Cancelled are abnormal
+                        terminals.)
+        pass_count, fail_count, skip_count, error_count, total_count
+                        — pytest summary, updated mid-run every ~15s.
+        controller    → controller VM IP.
+        remote_pid    → detached pytest's pid on the controller.
+        report_file_path → server-relative path to pytest-html report;
+                        fetch absolute via {base_url}/<report_file_path>
+                        with the JWT.
+        log_file_path → on-controller live log path.
+        log_size, log_tail → last 4 KB of pytest stdout.
+        start_timestamp / end_timestamp → unix epoch seconds.
+
+      To poll continuously, use start_watch on this tool with
+      done_match: { path: "status", equals: "Done" } — the assistant
+      then reads pass/fail counts in the completion message.
     parameters:
       id:
         type: number
@@ -963,16 +1021,20 @@ tools:
       } catch {}
       const apiBase = `${location.protocol}//${location.hostname}:8000`;
       if (args.id == null) return { _error: 'id is required' };
-      const r = await fetch(`${apiBase}/adc/get_test_execution_by_id`, {
-        method: 'POST',
-        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      const r = await fetch(`${apiBase}/adc/automation/pytest/${Number(args.id)}/`, {
+        method: 'GET',
+        headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ id: Number(args.id) }),
       });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
       if (r.status === 404) return { _error: `Execution ${args.id} not found` };
       if (!r.ok) return { _error: `API ${r.status}`, body: (await r.text()).slice(0, 300) };
-      return await r.json();
+      const json = await r.json();
+      // Surface absolute report URL alongside the server-relative path.
+      if (json && json.report_file_path) {
+        json.report_url = `${location.protocol}//${location.hostname}:8000/${String(json.report_file_path).replace(/^\//, '')}`;
+      }
+      return json;
 
   # ─────────── lock_lab (destructive) ───────────
   lock_lab:

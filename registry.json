@@ -15,9 +15,9 @@
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "author": "forge",
-      "description": "FortiNAC TP browser connector — NFR read/edit + weekly status + comments, plus automation (labs, testcases, pytest runs, results) and get_lab_devices. NAC upgrades moved to the dedicated nac connector.",
+      "description": "FortiNAC TP browser connector — NFR read/edit + weekly status + comments, plus automation (labs, testcases, pytest runs, results) and get_lab_devices. v0.7 switches run_pytest + get_test_execution to the v2 /adc/automation/pytest/ API; list_testcases flatten drops the `tests/` prefix.",
       "min_forge_version": "0.9.17"
     },
     {
