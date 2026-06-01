@@ -136,13 +136,13 @@ tools:
       max_polls: 15
       on_done:
         mode: chat
-        message: "NAC {args.host} 升级完成,当前 build {poll.captured.build}({poll.captured.version})。"
+        message: "NAC {args.host} upgrade confirmed — now running build {poll.captured.build} ({poll.captured.version})."
       on_fail:
         mode: chat
-        message: "NAC {args.host} 未在预期内确认到目标 build,请手动核对(nac.get_version)。"
+        message: "NAC {args.host} did not reach the target build in time — please verify manually (nac.get_version). If the image was written but the box never rebooted, run nac.reboot."
       progress:
         show: true
-        message: "NAC {args.host} 升级中… 第 {poll_count}/{max_polls} 次,当前 build={poll.captured.build}"
+        message: "Upgrading NAC {args.host}… poll {poll_count}/{max_polls}, current build {poll.captured.build}"
 
   # ─────────── get_version ───────────
   get_version:
