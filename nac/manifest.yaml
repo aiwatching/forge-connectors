@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device (direct)
 icon: 🛡️
-version: "0.1.1"
+version: "0.1.2"
 author: forge
 category: connector
 mode: server-side
@@ -10,6 +10,13 @@ description: |
   REST API) — no TP platform in the middle. Built because driving NAC
   upgrades through TP's automation page proved unstable.
 
+  Connection: every tool takes `host` (the NAC IP — supply it from chat,
+  it is NOT stored in the connector) plus optional port / username /
+  password. If those three are omitted, the connector's saved defaults
+  are used (port 22, username admin, the saved password). So you can
+  manage many NACs from one install by passing host (and optionally
+  different creds) per call.
+
   CLI part (protocol: ssh, via PTY):
     - upgrade: run `execute restore image scp …`, auto-answer the
       (y/N) confirmations, wait until the image is written, return the
@@ -17,32 +24,21 @@ description: |
     - get_version: read the running version/build (`get system status`).
     - run_command: run any single CLI command and capture output.
 
-  Provide host / port / username (default admin) / password in settings.
-  API part (protocol: http) is a later addition once the REST surface
-  is mapped.
-
 settings:
-  host:
-    type: string
-    label: NAC host/IP
-    description: "Management IP or hostname of the FortiNAC appliance, e.g. 10.15.52.152."
-    required: true
   port:
     type: string
-    label: SSH port
-    description: "SSH port. Default 22."
+    label: Default SSH port
+    description: "Fallback SSH port when a call doesn't pass one. Default 22."
     default: "22"
   username:
     type: string
-    label: Username
-    description: "SSH user. FortiNAC default is admin."
+    label: Default username
+    description: "Fallback SSH user when a call doesn't pass one. FortiNAC default is admin."
     default: "admin"
-    required: true
   password:
     type: secret
-    label: Password
-    description: "SSH password (encrypted at rest; fed to the login prompt, never logged)."
-    required: true
+    label: Default password
+    description: "Fallback SSH password (encrypted at rest, sent silently, never logged). A call may override it by passing password."
 
 tools:
 
@@ -64,6 +60,19 @@ tools:
     destructive: true
     protocol: ssh
     parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC management IP/hostname to upgrade, e.g. 10.15.52.152."
+      port:
+        type: string
+        description: "SSH port. Omit to use the connector default (22)."
+      username:
+        type: string
+        description: "SSH user. Omit to use the connector default (admin)."
+      password:
+        type: string
+        description: "SSH password. Omit to use the connector's saved default (preferred — avoids putting the password in chat)."
       image_path:
         type: string
         required: true
@@ -81,10 +90,6 @@ tools:
         default: "fortinet"
         description: "SCP password."
     ssh:
-      host: "{settings.host}"
-      port: "{settings.port}"
-      user: "{settings.username}"
-      password: "{settings.password}"
       prompt_regex: "#[ \\t]*$"
       commands:
         - "execute restore image scp {args.image_path} {args.scp_host} {args.scp_user} {args.scp_pass}"
@@ -109,12 +114,21 @@ tools:
       matches the target (e.g. 6957) — the device is unreachable for a
       few minutes mid-reboot, so expect connection errors until it's up.
     protocol: ssh
-    parameters: {}
+    parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC management IP/hostname, e.g. 10.15.52.152."
+      port:
+        type: string
+        description: "SSH port. Omit to use the connector default (22)."
+      username:
+        type: string
+        description: "SSH user. Omit to use the connector default (admin)."
+      password:
+        type: string
+        description: "SSH password. Omit to use the connector's saved default."
     ssh:
-      host: "{settings.host}"
-      port: "{settings.port}"
-      user: "{settings.username}"
-      password: "{settings.password}"
       prompt_regex: "#[ \\t]*$"
       commands:
         - "get system status"
@@ -137,15 +151,24 @@ tools:
       tool does NOT auto-answer (y/N) prompts).
     protocol: ssh
     parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC management IP/hostname."
+      port:
+        type: string
+        description: "SSH port. Omit to use the connector default (22)."
+      username:
+        type: string
+        description: "SSH user. Omit to use the connector default (admin)."
+      password:
+        type: string
+        description: "SSH password. Omit to use the connector's saved default."
       command:
         type: string
         required: true
         description: "The CLI command to run (e.g. 'get system status')."
     ssh:
-      host: "{settings.host}"
-      port: "{settings.port}"
-      user: "{settings.username}"
-      password: "{settings.password}"
       prompt_regex: "#[ \\t]*$"
       commands:
         - "{args.command}"
