@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.4.5"
+version: "0.4.6"
 author: forge
 category: connector
 mode: browser-side
@@ -98,7 +98,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const url = `${apiBase}/adc/get_nfr_list/${encodeURIComponent(args.release || 'all')}`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
@@ -157,7 +157,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Device%20Integration`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
@@ -214,7 +214,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const url = `${apiBase}/adc/get_device_integration_agent_list/${encodeURIComponent(args.release || 'all')}/Agent`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — JWT expired, re-login.`, url };
@@ -279,7 +279,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const hdr = { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' };
       const id = args.id;
       if (id == null) return { _error: 'id is required' };
@@ -337,7 +337,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const url = `${apiBase}/adc/get_version_list/${encodeURIComponent(args.module || 'NFR')}`;
       const r = await fetch(url, { headers: { 'Authorization': `JWT ${jwt}`, 'Accept': 'application/json' }, credentials: 'include' });
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.`, url };
@@ -390,7 +390,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       // Decode JWT payload to grab the user email.
       let userEmail = '';
       try {
@@ -476,7 +476,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       let userEmail = '';
       try {
         const p = JSON.parse(atob(jwt.split('.')[1]));
@@ -536,7 +536,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       const id = Number(args.weekly_status_id);
       const r = await fetch(`${apiBase}/adc/delete_nfr_weekly_status/${id}`, {
         method: 'DELETE',
@@ -599,7 +599,7 @@ tools:
           return { _error: 'JWT expired. Open the TP tab and sign out + sign in to refresh, then retry.', _hint: 'TP tokens last ~12h; the page does not auto-refresh them.' };
         }
       } catch {}
-      const apiBase = '{settings.api_base_url}'.replace(/\/$/, '');
+      const apiBase = `${location.protocol}//${location.hostname}:8000`;
       let userEmail = '';
       try {
         const p = JSON.parse(atob(jwt.split('.')[1]));
