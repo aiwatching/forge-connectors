@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.7.0"
+version: "0.7.1"
 author: forge
 category: connector
 mode: browser-side
@@ -40,6 +40,16 @@ description: |
     populated mid-run. Also: list_testcases flatten paths are now
     relative to /root/fnac_auto/tests (no `tests/` prefix) — the v1
     prefix double-pathed against the v2 server (`teststests/...`).
+
+  v0.7.1 — list_testcases rewritten: /adc/get_testcases now returns
+    a recursive `{children: [{identifier, name, children?}]}` tree
+    (the old flat `{tests: {<mod>: {<file>: [tests]}}}` shape is
+    gone). The old flatten walked it as `Object.entries` and
+    produced garbage like `children/0`, `children/1`. New impl
+    walks the tree properly and joins names with `/` for dirs,
+    `::` for the final TestClass/test_method leaf. Adds `search`
+    param for substring filter (so the LLM can grep e.g.
+    `_01_administrators` without dumping the whole 500KB tree).
 
 settings:
   base_url:
@@ -772,27 +782,41 @@ tools:
   # ─────────── list_testcases ───────────
   list_testcases:
     description: |
-      List available pytest test cases as a module → file → test tree.
-      GET /adc/get_testcases.
+      Discover pytest test ids on TP. GET /adc/get_testcases returns
+      a recursive `{children: [{identifier, name, children?}]}` tree
+      (folders → files → TestClass::test_method leaves). We walk it
+      and emit pytest ids relative to `/root/fnac_auto/tests`, ready
+      to drop into run_pytest.
 
       SIDE-EFFECT: the backend pulls the latest `main` of TP's local
       test-framework clone before parsing. Harmless in normal use, but
       it will rebase any branch a developer is hand-testing on the TP
       host. Don't call this on a tight loop.
 
-      `flatten: true` → return a flat list of pytest ids relative to
-      `/root/fnac_auto/tests` ("<module>/<file>::<test>") ready to pass
-      to run_pytest. (v2 automation API joins these onto the tests
-      repo root itself; do NOT include a leading `tests/`.)
-      `module` → return only that top-level module's subtree/ids.
+      Path format (matches v2 doc):
+        Tests_Functional/managed_fsw/_02_users_and_hosts/_01_administrators/test_admin.py::TestAdmin::test_login
+      No `tests/` prefix — TP joins onto the repo root itself.
+
+      Default returns a flat list. Use `search` to grep — e.g.
+      `search: "_01_administrators"` returns only ids whose path
+      contains that substring (case-insensitive). Use `prefix` to
+      filter by exact path prefix (e.g. only descend a specific dir).
+      Use `tree: true` to get the raw nested response back instead.
     parameters:
-      flatten:
+      search:
+        type: string
+        description: "Substring filter on the full pytest id (case-insensitive). e.g. \"_01_administrators\" or \"radius\"."
+      prefix:
+        type: string
+        description: "Path prefix filter (e.g. \"Tests_Functional/managed_fsw\"). Only ids whose path starts with this are returned."
+      tree:
         type: boolean
         default: false
-        description: "true = flat pytest-id list instead of the nested tree."
-      module:
-        type: string
-        description: "Restrict to one top-level module (e.g. 'L2'). Empty = all."
+        description: "true = return the raw nested {children: [...]} tree instead of a flat list. Mostly for debugging — usually large."
+      limit:
+        type: number
+        default: 500
+        description: "Cap on returned ids. Default 500. Hard cap 5000."
     page:
       url: "{base_url}/automation"
       on_target: "/automation"
@@ -808,27 +832,42 @@ tools:
       if (r.status === 401 || r.status === 403) return { _error: `Auth ${r.status} — re-login.` };
       if (!r.ok) return { _error: `API ${r.status}` };
       const body = await r.json();
-      // tree shape: { tests: { <module>: { <file.py>: [<test>, ...] } } }
-      const root = body && body.tests ? body.tests : body;
-      const modFilter = (args.module || '').trim();
-      if (!args.flatten) {
-        if (modFilter) return { module: modFilter, tree: (root || {})[modFilter] ?? null };
-        return body;
-      }
+      if (args.tree) return body;
+      // Walk recursive {children: [{name, children?[]}]}:
+      //   - dir/file names join with '/'
+      //   - leaf "TestClass::test_method" names join with '::' onto the .py file
+      //   - top-level body.children entries are independent roots, each is
+      //     a top-level dir under /root/fnac_auto/tests
       const ids = [];
-      for (const [mod, files] of Object.entries(root || {})) {
-        if (modFilter && mod !== modFilter) continue;
-        if (!files || typeof files !== 'object') continue;
-        for (const [file, tests] of Object.entries(files)) {
-          const base = [mod, file].filter(Boolean).join('/');
-          if (Array.isArray(tests) && tests.length) {
-            for (const t of tests) ids.push(`${base}::${t}`);
-          } else {
-            ids.push(base);
-          }
+      function walk(node, prefix) {
+        const name = String(node && node.name || '');
+        const kids = node && Array.isArray(node.children) ? node.children : null;
+        if (!kids || kids.length === 0) {
+          // Leaf — name carries the TestClass::test_method (or bare test_method)
+          ids.push(prefix ? `${prefix}::${name}` : name);
+          return;
         }
+        const here = prefix ? `${prefix}/${name}` : name;
+        for (const c of kids) walk(c, here);
       }
-      return { module: modFilter || 'all', count: ids.length, testcase_ids: ids };
+      const roots = Array.isArray(body && body.children) ? body.children : [body];
+      for (const root of roots) walk(root, '');
+      let out = ids;
+      const prefix = (args.prefix || '').trim();
+      if (prefix) {
+        const p = prefix.replace(/^\/+|\/+$/g, '');
+        out = out.filter(id => id === p || id.startsWith(p + '/') || id.startsWith(p + '::'));
+      }
+      const search = (args.search || '').trim();
+      if (search) {
+        const s = search.toLowerCase();
+        out = out.filter(id => id.toLowerCase().includes(s));
+      }
+      const totalMatched = out.length;
+      const limit = Math.min(Math.max(1, Number(args.limit) || 500), 5000);
+      const truncated = out.length > limit;
+      if (truncated) out = out.slice(0, limit);
+      return { total: ids.length, matched: totalMatched, returned: out.length, truncated, testcase_ids: out };
 
   # ─────────── run_pytest (destructive) ───────────
   run_pytest:
