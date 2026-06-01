@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device (direct)
 icon: 🛡️
-version: "0.1.3"
+version: "0.2.0"
 author: forge
 category: connector
 mode: server-side
@@ -103,7 +103,36 @@ tools:
       capture:
         from_version: "from version ([0-9][0-9.]+)"
         to_version: "to version ([0-9][0-9.]+)"
+        target_build: "build([0-9]+)"          # from the echoed image filename — the build we're moving to
       timeout_sec: 240
+    # Long-task watch: upgrade returns when the image is written, but the
+    # box then reboots (~3-5 min). The watch polls get_version until the
+    # running build matches the target, then reports back in chat.
+    # NOTE: poll_args carries host/port/username only — NOT the password.
+    # get_version falls back to the connector's saved password, so set it
+    # in the nac connector settings for the auto-verify to authenticate
+    # (we don't persist the password into the watch row).
+    async:
+      poll: get_version
+      poll_args:
+        host: "{args.host}"
+        port: "{args.port}"
+        username: "{args.username}"
+      done_match:
+        path: captured.build
+        equals: "{result.captured.target_build}"
+      interval_sec: 60
+      timeout_sec: 900
+      max_polls: 15
+      on_done:
+        mode: chat
+        message: "NAC {args.host} 升级完成,当前 build {poll.captured.build}({poll.captured.version})。"
+      on_fail:
+        mode: chat
+        message: "NAC {args.host} 未在预期内确认到目标 build,请手动核对(nac.get_version)。"
+      progress:
+        show: true
+        message: "NAC {args.host} 升级中… 第 {poll_count}/{max_polls} 次,当前 build={poll.captured.build}"
 
   # ─────────── get_version ───────────
   get_version:

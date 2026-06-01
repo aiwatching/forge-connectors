@@ -6,7 +6,7 @@
       "id": "nac",
       "name": "FortiNAC Device (direct)",
       "icon": "🛡️",
-      "version": "0.1.3",
+      "version": "0.2.0",
       "author": "forge",
       "description": "Direct FortiNAC appliance management over SSH — firmware upgrade (execute restore image scp, auto-answers y/N), version check, arbitrary CLI. Server-side via PTY. Pass host per-call from chat; port/username/password fall back to connector defaults.",
       "min_forge_version": "0.9.17"
