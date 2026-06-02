@@ -1,7 +1,7 @@
 id: fortinac
 name: FortiNAC Web (REST API)
 icon: 🛡️
-version: "0.1.1"
+version: "0.1.2"
 author: forge
 category: connector
 mode: server-side
@@ -13,9 +13,10 @@ description: |
   ssh one for OS-level operations (firmware restore, reboot).
 
   Connection: every tool takes `host` (the NAC mgmt IP — supply it
-  per call, it is NOT stored in the connector). Port / username /
-  password come from connector settings so one install can drive
-  many NACs that share the same admin credentials.
+  per call, it is NOT stored in the connector). Port defaults to 8443
+  per tool (override per call if your NAC uses a non-default port).
+  Username and password come from connector settings so one install
+  can drive many NACs that share the same admin credentials.
 
   Auth model (v0.1 — caller-explicit session key):
     1. POST /user/current-session/login (form `user`/`password` from
@@ -30,11 +31,6 @@ description: |
   host trust store or open a Forge issue for a verify_tls knob.
 
 settings:
-  port:
-    type: number
-    label: HTTPS port
-    default: 8443
-    description: "Fallback FortiNAC mgmt HTTPS port. Default 8443."
   username:
     type: string
     label: Username
@@ -50,9 +46,7 @@ settings:
 # No top-level auth: — v0.1 uses caller-supplied bfSecKey on each call.
 # Future v0.x may add a connector-level auth hook with a 5-min cached key.
 
-# Test block — disabled in v0.1.x because `host` is per-call (no fixed
-# IP in settings) and the Test button has no place to type one. Bring
-# back if/when we add a "default test host" optional setting.
+# Test block omitted — no fixed host to test against.
 
 tools:
   login:
@@ -61,21 +55,19 @@ tools:
       username/password. Returns the LoginResult — most importantly
       `sessionKey`, which other tools pass as `session_key` (sent to NAC
       as the bfSecKey query param).
-
-      Typical pipeline usage:
-        LOGIN=$(curl -sS -X POST .../connector-tool --data \
-          '{"plugin_id":"fortinac","tool":"login","input":{"host":"10.15.52.152"}}')
-        KEY=$(echo "$LOGIN" | jq -r '.content | fromjson | .sessionKey')
-        # then pass KEY as session_key to other tools
     protocol: http
     parameters:
       host:
         type: string
         required: true
         description: "NAC mgmt IP/hostname, e.g. 10.15.52.152. No scheme, no port."
+      port:
+        type: number
+        default: 8443
+        description: "FortiNAC mgmt HTTPS port. Default 8443."
     request:
       method: POST
-      url: "https://{args.host}:{settings.port}/user/current-session/login"
+      url: "https://{args.host}:{args.port}/user/current-session/login"
       body_form:
         user: "{settings.username}"
         password: "{settings.password}"
@@ -91,13 +83,17 @@ tools:
         type: string
         required: true
         description: "NAC mgmt IP/hostname, same one used for login()."
+      port:
+        type: number
+        default: 8443
+        description: "FortiNAC mgmt HTTPS port. Default 8443."
       session_key:
         type: string
         required: true
         description: "bfSecKey value from a prior login()."
     request:
       method: POST
-      url: "https://{args.host}:{settings.port}/user/current-session/logout?bfSecKey={args.session_key}"
+      url: "https://{args.host}:{args.port}/user/current-session/logout?bfSecKey={args.session_key}"
     returns: "BaseResult { status, errorMessage }"
 
   get_session_info:
@@ -111,13 +107,17 @@ tools:
         type: string
         required: true
         description: "NAC mgmt IP/hostname, same one used for login()."
+      port:
+        type: number
+        default: 8443
+        description: "FortiNAC mgmt HTTPS port. Default 8443."
       session_key:
         type: string
         required: true
         description: "bfSecKey value from a prior login()."
     request:
       method: GET
-      url: "https://{args.host}:{settings.port}/user/current-session/timeout?bfSecKey={args.session_key}"
+      url: "https://{args.host}:{args.port}/user/current-session/timeout?bfSecKey={args.session_key}"
     returns: "UserSessionTimeoutResult { status, timeout, errorMessage }"
 
   get_host_by_mac:
@@ -134,6 +134,10 @@ tools:
         type: string
         required: true
         description: "NAC mgmt IP/hostname holding the Host record."
+      port:
+        type: number
+        default: 8443
+        description: "FortiNAC mgmt HTTPS port. Default 8443."
       session_key:
         type: string
         required: true
@@ -144,5 +148,5 @@ tools:
         description: "MAC address in canonical form (AA:BB:CC:DD:EE:FF). Case-insensitive."
     request:
       method: GET
-      url: "https://{args.host}:{settings.port}/host/by-mac/{args.mac}?bfSecKey={args.session_key}"
+      url: "https://{args.host}:{args.port}/host/by-mac/{args.mac}?bfSecKey={args.session_key}"
     returns: "HostRecord { id, status, role, hostGroup, lastSeen, adapter, user, ... }"
