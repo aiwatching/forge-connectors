@@ -4,20 +4,11 @@
   "connectors": [
     {
       "id": "nac",
-      "name": "FortiNAC Device (direct)",
+      "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": "forge",
-      "description": "Direct FortiNAC appliance management over SSH \u2014 firmware upgrade (execute restore image scp, auto-answers y/N), version check, arbitrary CLI, reboot. Server-side via PTY. Pass host per-call from chat; port/username/password fall back to connector defaults.",
-      "min_forge_version": "0.9.17"
-    },
-    {
-      "id": "fortinac",
-      "name": "FortiNAC Web (REST API)",
-      "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.1.2",
-      "author": "forge",
-      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the ssh nac connector for queries. Host + port (default 8443) are per-call args; username/password in settings. v0.1 \u2014 caller-explicit session key: login() -> sessionKey -> pass as session_key arg. v0.1 tools: login, logout, get_session_info, get_host_by_mac.",
+      "description": "FortiNAC appliance management \u2014 SSH/CLI plus REST API in one connector. SSH tools (upgrade / get_version / run_command / reboot) for OS-level ops; REST tools (login / logout / get_session_info / get_host_by_mac) for structured queries. Pass host per-call; username/password in settings. http.verify_tls=false handles the self-signed cert on every NAC.",
       "min_forge_version": "0.9.17"
     },
     {

@@ -1,28 +1,39 @@
 id: nac
-name: FortiNAC Device (direct)
+name: FortiNAC Device
 icon: 🛡️
-version: "0.3.0"
+version: "0.4.0"
 author: forge
 category: connector
 mode: server-side
 description: |
-  Direct management of a FortiNAC appliance over SSH (and, later, its
-  REST API) — no TP platform in the middle. Built because driving NAC
-  upgrades through TP's automation page proved unstable.
+  Direct management of a FortiNAC appliance — SSH/CLI plus REST API,
+  one connector, one set of credentials. Built because driving NAC
+  through TP's automation page proved unstable.
 
-  Connection: every tool takes `host` (the NAC IP — supply it from chat,
-  it is NOT stored in the connector) plus optional port / username /
-  password. If those three are omitted, the connector's saved defaults
-  are used (port 22, username admin, the saved password). So you can
-  manage many NACs from one install by passing host (and optionally
-  different creds) per call.
+  Connection: every tool takes `host` (the NAC IP — supply it per
+  call, it is NOT stored in the connector). Username/password come
+  from connector settings so one install can drive many NACs that
+  share admin credentials.
 
-  CLI part (protocol: ssh, via PTY):
-    - upgrade: run `execute restore image scp …`, auto-answer the
-      (y/N) confirmations, wait until the image is written, return the
-      from/to versions. The device reboots itself afterwards.
-    - get_version: read the running version/build (`get system status`).
-    - run_command: run any single CLI command and capture output.
+  CLI tools (protocol: ssh, via PTY) — for OS-level ops:
+    - upgrade: `execute restore image scp …` with auto-y/N and reboot.
+    - get_version: read running version/build.
+    - run_command: arbitrary CLI command.
+    - reboot: `execute reboot`.
+
+  REST tools (protocol: http) — for structured queries / mutations
+  that map cleanly to the mgmt API (https://<host>:8443/...):
+    - login: POST /user/current-session/login → sessionKey (bfSecKey).
+    - logout / get_session_info: session lifecycle.
+    - get_host_by_mac: lookup a Host record by MAC.
+
+  Auth model for REST tools (v0.4 — caller-explicit session key):
+    1. Call login(host=...) → get sessionKey from LoginResult.
+    2. Pass session_key to every subsequent REST tool — appended to
+       the URL as ?bfSecKey=<key>.
+    3. Sessions expire fast (~30 min idle). Re-login if a long run
+       needs more. FortiNAC v7.6 has no long-lived API token CLI
+       command, so login-once-per-run is the canonical pattern.
 
 settings:
   port:
@@ -38,7 +49,14 @@ settings:
   password:
     type: secret
     label: Default password
-    description: "Fallback SSH password (encrypted at rest, sent silently, never logged). A call may override it by passing password."
+    description: "Fallback SSH/REST password (encrypted at rest, sent silently, never logged). Used by SSH tools (override per-call) and as the REST login() password."
+
+# Connector-level HTTP runtime knobs. NAC ships a self-signed cert
+# (CN=at16-fortinac and similar) so Node fetch's default cert verify
+# fails. Turn off verification — the alternative is trusting NAC's
+# cert in the OS trust store on every Forge install.
+http:
+  verify_tls: false
 
 tools:
 
@@ -253,3 +271,117 @@ tools:
       fail_when: "Permission denied|command parse error|Unknown action"
       success_on_close: true
       timeout_sec: 60
+
+  # ─────────── REST tools (protocol: http) ───────────
+  # Auth model (v0.4): caller-explicit session key.
+  #   1. Call login(host=...) → captures sessionKey from LoginResult.
+  #   2. Pass session_key to every subsequent REST tool — appended to
+  #      the URL as ?bfSecKey=<key>.
+  #   3. FortiNAC v7.6 has no CLI command to mint a long-lived API
+  #      token (unlike FortiGate's `config system api-user`), so a
+  #      fresh login per pipeline run is the canonical pattern.
+
+  login:
+    description: |
+      Log in to FortiNAC's REST API. Returns LoginResult — most
+      importantly `sessionKey` (the bfSecKey value), which other REST
+      tools pass as `session_key`.
+
+      Typical pipeline usage:
+        LOGIN=$(curl -sS -X POST .../connector-tool --data \
+          '{"plugin_id":"nac","tool":"login","input":{"host":"10.15.52.152"}}')
+        KEY=$(echo "$LOGIN" | jq -r '.content | fromjson | .sessionKey')
+        # then pass KEY as session_key to other REST tools
+
+      Username/password come from connector settings (the SAME pair
+      used by SSH tools).
+    protocol: http
+    parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC mgmt IP/hostname, e.g. 10.15.52.152."
+      port:
+        type: number
+        default: 8443
+        description: "FortiNAC mgmt HTTPS port. Default 8443."
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/user/current-session/login"
+      body_form:
+        user: "{settings.username}"
+        password: "{settings.password}"
+    returns: "LoginResult { status, sessionKey, userRecord, errorMessage, requiresSecondaryAuthentication, acceptedAUP, landingPage, systemRunning, ... }"
+
+  logout:
+    description: |
+      Invalidate the current REST session. Best-effort — the server
+      expires idle sessions automatically.
+    protocol: http
+    parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC mgmt IP/hostname, same one used for login()."
+      port:
+        type: number
+        default: 8443
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/user/current-session/logout?bfSecKey={args.session_key}"
+    returns: "BaseResult { status, errorMessage }"
+
+  get_session_info:
+    description: |
+      Seconds remaining before the current REST session expires.
+      Returns 0 / negative if the key is no longer valid.
+    protocol: http
+    parameters:
+      host:
+        type: string
+        required: true
+      port:
+        type: number
+        default: 8443
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/user/current-session/timeout?bfSecKey={args.session_key}"
+    returns: "UserSessionTimeoutResult { status, timeout, errorMessage }"
+
+  get_host_by_mac:
+    description: |
+      Look up a Host record by its MAC address. Useful for verifying
+      that a client landed on the right state after a fix (correct
+      group, role, online status, last-seen, etc.).
+
+      MAC is the colon-separated form (AA:BB:CC:DD:EE:FF). Case
+      insensitive. Returns an empty / error payload if unknown.
+    protocol: http
+    parameters:
+      host:
+        type: string
+        required: true
+        description: "NAC mgmt IP/hostname holding the Host record."
+      port:
+        type: number
+        default: 8443
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+      mac:
+        type: string
+        required: true
+        description: "MAC address in canonical form (AA:BB:CC:DD:EE:FF). Case-insensitive."
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/host/by-mac/{args.mac}?bfSecKey={args.session_key}"
+    returns: "HostRecord { id, status, role, hostGroup, lastSeen, adapter, user, ... }"
