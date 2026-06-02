@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (one connector, one credential pair). v0.5: REST tools rewritten for the real /actions/ base + JSESSIONID cookie + Authorization sessionKey scheme used by NAC 7.6 GUI (verified via Chrome DevTools probe). login() returns sessionKey in body + JSESSIONID via captured set-cookie preamble; subsequent tools take jsessionid + session_key args.",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API. v0.6 adds 11 typed REST queries (host by ip/user/port, host policy/health/applications, list/count/recent hosts, connection events, system events, access policies) + a generic call_api escape hatch for the remaining 1280+ endpoints from the OpenAPI schema. Verified against live NAC 7.6 deployment.",
       "min_forge_version": "0.9.17"
     },
     {
