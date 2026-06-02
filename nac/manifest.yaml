@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.6.0"
+version: "0.7.0"
 author: forge
 category: connector
 mode: server-side
@@ -782,3 +782,258 @@ tools:
         Content-Type: "application/json"
       body: "{args.body_json}"
     returns: "Whatever the NAC endpoint returns — typically { status, results, errorMessage }."
+
+  # ─────────── Network device (switch / AP) queries ───────────
+
+  list_devices:
+    description: |
+      Paginated list of Network Device records (managed switches, APs,
+      controllers). Same filter syntax as list_hosts.
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      filters:     { type: string, default: "" }
+      start:       { type: number, default: 0 }
+      count:       { type: number, default: 50 }
+      sort_key:    { type: string, default: "name" }
+      sort_dir:    { type: string, default: "asc" }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}&filters={args.filters}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, results: [NetworkDevice{ id, name, ip, type, model, status, container, ... }], total }"
+
+  count_devices:
+    description: "Count of Network Device records matching the filter (or all if empty)."
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      filters:     { type: string, default: "" }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device/count?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&filters={args.filters}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, total }"
+
+  get_device:
+    description: |
+      Get a Network Device record (switch/AP detail) by DBID. Returns
+      mgmt IP, model, firmware, ports summary, container assignment, etc.
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Network Device DBID." }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device/{args.id}?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, results: [NetworkDevice] }"
+
+  list_device_ports:
+    description: |
+      Summary of all Ports on a specific Network Device (or list of
+      devices). Useful for diagnosing "host on wrong port" bugs.
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      device_id:   { type: string, required: true, description: "Network Device DBID (or comma-separated list of DBIDs)." }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device/port/by-device?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&devID={args.device_id}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, results: [Port{ id, name, status, vlan, connectedHost, ... }] }"
+
+  get_port:
+    description: "Get a Port record by DBID — current VLAN, connected host, admin/oper status."
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Port record DBID." }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device/port/{args.id}?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, results: [Port] }"
+
+  list_port_changes_for_port:
+    description: |
+      Port Change events for a specific port — VLAN changes, link state,
+      enforcement actions. Primary evidence source for Mantis bugs about
+      ports flapping or VLANs not landing.
+    protocol: http
+    parameters:
+      host:         { type: string, required: true }
+      port:         { type: number, default: 8443 }
+      jsessionid:   { type: string, required: true }
+      session_key:  { type: string, required: true }
+      port_id:      { type: string, required: true, description: "Port record DBID." }
+      date_start:   { type: number, description: "Unix ms epoch — only include changes after this time." }
+      date_end:     { type: number, description: "Unix ms epoch — only include changes before this time." }
+      date_last_x:  { type: number, description: "Alternative: only include changes from the last N seconds." }
+    request:
+      method: GET
+      url: "https://{args.host}:{args.port}/actions/device/port-changes/for-port?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&portID={args.port_id}&dateStart={args.date_start}&dateEnd={args.date_end}&dateLastX={args.date_last_x}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, results: [PortChange{ timestamp, type, oldValue, newValue, vlan, ... }] }"
+
+  # ─────────── Destructive host actions ───────────
+  # All require destructive: true so the LLM gets a confirm prompt.
+  # NAC POSTs are application/x-www-form-urlencoded.
+
+  enable_host_by_mac:
+    description: |
+      Re-enable a previously-disabled Host (by MAC). Sets the host's
+      'enabled' state back to true so NAC stops blocking it.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      mac:         { type: string, required: true, description: "MAC address (AA:BB:CC:DD:EE:FF)." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/host/enable-by-mac?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        mac: "{args.mac}"
+    returns: "{ status, errorMessage }"
+
+  disable_host_by_mac:
+    description: |
+      Disable a Host (by MAC). NAC will block/quarantine it on next
+      network event. Useful for "kick a misbehaving device" verification.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      mac:         { type: string, required: true, description: "MAC address." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/host/disable-by-mac?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        mac: "{args.mac}"
+    returns: "{ status, errorMessage }"
+
+  set_host_role:
+    description: |
+      Change the role assignment for one or more Host records. The role
+      drives which Access Policy NAC applies. Use to verify a fix
+      changes policy as expected.
+
+      `host_ids` is a CSV of Host DBIDs (NOT MACs — look up first via
+      get_host_by_mac).
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      host_ids:    { type: string, required: true, description: "CSV of Host record DBIDs, e.g. '1462264256688154' or '1234,5678'." }
+      role:        { type: string, required: true, description: "Role name to assign (e.g. 'NAC-Default', 'Quarantine'). Use list_access_policies / get_host_policy to discover available roles." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/host/set-role?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        id: "{args.host_ids}"
+        role: "{args.role}"
+    returns: "{ status, errorMessage }"
+
+  rescan_host_with_profile:
+    description: |
+      Force NAC to re-scan a Host with a particular Device Profiling
+      Rule (script profile). Use to verify a profiling rule fix re-
+      categorises a previously-misclassified device.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Host record DBID." }
+      profile_id:  { type: string, required: true, description: "Device Profiling Rule DBID. List via call_api path='host/device-profiling-rule/simple'." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/host/{args.id}/rescan-with-profile?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        profileID: "{args.profile_id}"
+    returns: "{ status, errorMessage }"
+
+  validate_dpc_host:
+    description: |
+      Force a re-validation of the device profile for one or more
+      Dynamic Profile Clients. NAC re-runs profiling rules against the
+      device's current attributes.
+
+      Use after applying a profiling-rule fix to verify the device now
+      lands in the right Type.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      ids:         { type: string, required: true, description: "CSV of DynamicClient DBIDs." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/host/dpc-hosts-table/validate?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&ids={args.ids}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"

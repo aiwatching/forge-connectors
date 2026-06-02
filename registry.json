@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API. v0.6 adds 11 typed REST queries (host by ip/user/port, host policy/health/applications, list/count/recent hosts, connection events, system events, access policies) + a generic call_api escape hatch for the remaining 1280+ endpoints from the OpenAPI schema. Verified against live NAC 7.6 deployment.",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (33 tools). v0.7 adds 6 network-device queries (switch/AP detail, ports, port-changes) and 5 destructive host actions (enable/disable by MAC, set role, rescan profile, DPC re-validate). All destructive actions are flagged with destructive:true for chat confirm prompts.",
       "min_forge_version": "0.9.17"
     },
     {
