@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (57 tools). v0.10 adds 13 operational read tools: 4 user queries (list/get/policy/directory search), 7 system status (cluster, software, hardware, license, HA, background tasks, groups), 2 integration (LDAP, AAA/RADIUS).",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (67 tools). v0.11 adds 10 integration read tools: MDM/SAML/syslog parser/vulnerability scanner/firewall tag lists, plus email/FSSO/SNMP/proxy global settings, plus get_recent_syslog_messages (debug what NAC has actually received).",
       "min_forge_version": "0.9.17"
     },
     {
