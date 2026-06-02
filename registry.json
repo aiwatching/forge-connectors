@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (44 tools). v0.9 adds 6 Access Policy management writes: enable/disable, swap/set rank, full update (POST AccessPolicy JSON), delete. All destructive. Closes the read-write loop for end-to-end policy verification flows.",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (57 tools). v0.10 adds 13 operational read tools: 4 user queries (list/get/policy/directory search), 7 system status (cluster, software, hardware, license, HA, background tasks, groups), 2 integration (LDAP, AAA/RADIUS).",
       "min_forge_version": "0.9.17"
     },
     {
