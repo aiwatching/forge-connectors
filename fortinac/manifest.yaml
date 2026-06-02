@@ -1,0 +1,138 @@
+id: fortinac
+name: FortiNAC Web (REST API)
+icon: 🛡️
+version: "0.1.0"
+author: forge
+category: connector
+mode: server-side
+min_forge_version: "0.9.17"
+description: |
+  Direct REST access to a FortiNAC appliance's management API
+  (https://<host>:<port>/...). Complements the `nac` SSH connector:
+  use this one for queries (hosts, policies, logs, etc.) and the
+  ssh one for OS-level operations (firmware restore, reboot).
+
+  Auth model (v0.1 — caller-explicit session key):
+    1. POST /user/current-session/login with form `user=..&password=..`
+       → returns `sessionKey` (the bfSecKey value).
+    2. Every subsequent call passes `session_key: "<key>"` as a tool arg,
+       which is appended to the URL as `?bfSecKey=<key>`.
+    3. Session expires fast (default ~30 min). Pipelines should
+       login → use within the lifetime → optionally logout.
+
+  TLS: FortiNAC appliances ship with self-signed certs by default.
+  If `node-fetch` rejects the cert, either install the cert in the
+  host trust store or follow the Forge issue for the verify_tls knob.
+
+settings:
+  host:
+    type: string
+    label: NAC host
+    required: true
+    description: "Management IP or FQDN, e.g. 10.15.52.152. No scheme, no port."
+  port:
+    type: number
+    label: HTTPS port
+    default: 8443
+    description: "FortiNAC mgmt HTTPS port. Default 8443."
+  username:
+    type: string
+    label: Username
+    required: true
+    description: "Admin username. Used for login and as the basis for the bfSecKey."
+  password:
+    type: secret
+    label: Password
+    required: true
+    description: "Admin password (encrypted at rest)."
+
+# No top-level auth: — v0.1 uses caller-supplied bfSecKey on each call.
+# Future v0.x may add a connector-level auth hook with a 5-min cached key.
+
+test:
+  description: "POST /user/current-session/login — confirms host:port reachable + credentials valid."
+  request:
+    method: POST
+    url: "https://{settings.host}:{settings.port}/user/current-session/login"
+    body_form:
+      user: "{settings.username}"
+      password: "{settings.password}"
+  ok_status: [200]
+  ok_template: "Logged in as {{userRecord.username}} (status={{status}})"
+  timeout_ms: 15000
+
+tools:
+  login:
+    description: |
+      Log in with the connector's configured username/password. Returns
+      the LoginResult — most importantly `sessionKey`, which other tools
+      pass as `session_key` (sent to NAC as the bfSecKey query param).
+
+      Typical pipeline usage:
+        LOGIN=$(curl -sS -X POST .../connector-tool \
+          --data '{"plugin_id":"fortinac","tool":"login","input":{}}')
+        KEY=$(echo "$LOGIN" | jq -r '.content | fromjson | .sessionKey')
+        # then pass KEY as session_key to other tools
+    protocol: http
+    parameters: {}
+    request:
+      method: POST
+      url: "https://{settings.host}:{settings.port}/user/current-session/login"
+      body_form:
+        user: "{settings.username}"
+        password: "{settings.password}"
+    returns: "LoginResult { status, sessionKey, userRecord, errorMessage, requiresSecondaryAuthentication, acceptedAUP, landingPage, systemRunning, ... }"
+
+  logout:
+    description: |
+      Invalidate the current session. Best-effort — the server expires
+      idle sessions on its own, so failing this is not catastrophic.
+    protocol: http
+    parameters:
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+    request:
+      method: POST
+      url: "https://{settings.host}:{settings.port}/user/current-session/logout?bfSecKey={args.session_key}"
+    returns: "BaseResult { status, errorMessage }"
+
+  get_session_info:
+    description: |
+      Seconds remaining before the current session expires. Use to
+      decide whether to re-login or keep going. Returns 0 / negative
+      if the key is no longer valid.
+    protocol: http
+    parameters:
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+    request:
+      method: GET
+      url: "https://{settings.host}:{settings.port}/user/current-session/timeout?bfSecKey={args.session_key}"
+    returns: "UserSessionTimeoutResult { status, timeout, errorMessage }"
+
+  get_host_by_mac:
+    description: |
+      Look up a Host record by its MAC address. Useful for verifying that
+      a client landed on the right state after a fix (correct group, role,
+      online status, last-seen, etc.).
+
+      MAC is the colon-separated form, e.g. "AA:BB:CC:DD:EE:FF".
+      Returns 404-ish payload if the MAC isn't known.
+    protocol: http
+    parameters:
+      session_key:
+        type: string
+        required: true
+        description: "bfSecKey value from a prior login()."
+      mac:
+        type: string
+        required: true
+        description: "MAC address in canonical form (AA:BB:CC:DD:EE:FF). Case-insensitive."
+    request:
+      method: GET
+      url: "https://{settings.host}:{settings.port}/host/by-mac/{args.mac}?bfSecKey={args.session_key}"
+    returns: "HostRecord { id, status, role, hostGroup, lastSeen, adapter, user, ... }"

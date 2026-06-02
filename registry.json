@@ -12,6 +12,15 @@
       "min_forge_version": "0.9.17"
     },
     {
+      "id": "fortinac",
+      "name": "FortiNAC Web (REST API)",
+      "icon": "🛡️",
+      "version": "0.1.0",
+      "author": "forge",
+      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the `nac` SSH connector for queries. v0.1 — caller-explicit session key: login() → sessionKey → pass as `session_key` arg to other tools. v0.1 tools: login, logout, get_session_info, get_host_by_mac. More host/policy/logging queries to come.",
+      "min_forge_version": "0.9.17"
+    },
+    {
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "🧪",
