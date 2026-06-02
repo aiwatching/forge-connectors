@@ -1,7 +1,7 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.3.0"
+version: "0.3.1"
 author: forge
 category: connector
 mode: browser-side
@@ -58,6 +58,17 @@ description: |
           → new_sast first go through create_bug + same pipeline
 
 host_match: "https://scap.fortinet.com/*"
+
+# login_redirect: substring that the URL contains when SCAP bounces you
+# to login (we've observed `/login` and the Fortinet SSO redirect). The
+# browser probe lands on /reports/ffi and checks the final URL — if it
+# contains this substring, the user is logged out.
+login_redirect: "/login"
+
+test:
+  description: "Open /reports/ffi in your Chrome tab and check whether you're still logged in (no redirect to login)."
+  probe: browser
+  timeout_ms: 15000
 
 # No settings — auth rides the open Chrome tab's same-origin cookie.
 settings: {}

@@ -78,7 +78,7 @@
       "id": "scap",
       "name": "SCAP (Fortinet PSIRT)",
       "icon": "\ud83d\udd12",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": "forge",
       "description": "Fortinet PSIRT SCAP \u2014 /reports/ffi. v0.3: extract_issues moved fully browser-side \u2014 fetches the artifacts zip in your logged-in tab (same-origin cookie auto-attached), parses zip + CSVs inline via DecompressionStream + minimal RFC4180 parser. No sessionid setting needed. Returns known_mantis[] + new_sast[] filtered by severity.",
       "min_forge_version": "0.9.17"
