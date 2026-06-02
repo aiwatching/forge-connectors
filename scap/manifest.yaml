@@ -1,0 +1,147 @@
+id: scap
+name: SCAP (Fortinet PSIRT)
+icon: 🔒
+version: "0.1.0"
+author: forge
+category: connector
+mode: browser-side
+runner: main
+min_forge_version: "0.9.17"
+description: |
+  Fortinet PSIRT SCAP reports — https://scap.fortinet.com/reports/ffi.
+
+  Reads the latest SAST/SCA scan results posted for each Fortinet Federal
+  Product. Tells you Critical / High / Medium / Low counts per build and
+  links to the per-build PDF report.
+
+  Auth: leverages the user's already-logged-in Chrome session (Django
+  sessionid cookie). To use:
+    1. Log in to https://scap.fortinet.com once in your browser.
+    2. Keep the tab open (or open one on demand — Forge's runner will).
+    3. Call tools from chat / pipelines.
+
+  v0.1 surface (read-only DOM scrape):
+    - list_reports          all rows from the FFI reports table
+    - find_for_product      filter by product name substring
+
+  Roadmap:
+    v0.2  download_pdf + extract_pdf_text  (binary fetch + text)
+    v0.3  parse_issues_by_severity         (LLM-friendly issue list)
+    v0.4  pipeline scap-product-blockers-to-mantis (auto-file Mantis bugs
+          for HIGH/CRITICAL blockers, hand off to fortinet-mantis-bug-fix-batch)
+
+host_match: "scap.fortinet.com"
+
+# Browser session is enough — no settings needed.
+settings: {}
+
+tools:
+  list_reports:
+    description: |
+      Scrape the entire /reports/ffi table and return all 79+ rows as
+      JSON. Each row has the date, product, severity counts (critical /
+      high / medium / low), pending SAST + SCA triage counts, and the
+      array of report PDF download URLs for that build.
+
+      Use this when you want a full snapshot. For "find ONE product",
+      use find_for_product — same data, filtered server-side in the
+      browser script.
+    page:
+      url: "https://scap.fortinet.com/reports/ffi"
+      on_target: "scap.fortinet.com/reports/ffi"
+    script: |
+      // Wait for the table to render (it's SSR but sometimes hydrated)
+      const table = document.querySelector('table.table-zebra');
+      if (!table) return { error: 'reports table not found on page' };
+
+      const headerCells = [...table.querySelectorAll('thead th, thead td')]
+        .map(th => th.textContent.trim());
+      const rows = [...table.querySelectorAll('tbody tr')].map(tr => {
+        const cells = [...tr.querySelectorAll('td')];
+        const pdfLinks = [...tr.querySelectorAll('a[href$=".pdf"], a[href*="/reports/pdf/"]')]
+          .map(a => ({
+            url: a.href,
+            text: a.textContent.trim() || a.getAttribute('title') || '',
+            // Pull build identifier out of URL filename
+            filename: a.href.split('/').pop(),
+          }));
+        return {
+          date:         cells[0]?.textContent.trim(),
+          product:      cells[1]?.textContent.trim(),
+          critical:     parseInt(cells[2]?.textContent.trim() || '0', 10),
+          high:         parseInt(cells[3]?.textContent.trim() || '0', 10),
+          medium:       parseInt(cells[4]?.textContent.trim() || '0', 10),
+          low:          parseInt(cells[5]?.textContent.trim() || '0', 10),
+          sast_pending: parseInt(cells[6]?.textContent.trim() || '0', 10),
+          sca_pending:  parseInt(cells[7]?.textContent.trim() || '0', 10),
+          pdfs:         pdfLinks,
+        };
+      });
+
+      return {
+        ok: true,
+        headers: headerCells,
+        count: rows.length,
+        rows,
+      };
+    returns: |
+      { ok: true, headers: [...], count: N, rows: [
+        { date, product, critical, high, medium, low, sast_pending, sca_pending,
+          pdfs: [ { url, text, filename } ] }
+      ] }
+
+  find_for_product:
+    description: |
+      Find rows for a specific product. Case-insensitive substring
+      match against the Product column. Use to drill into "give me the
+      latest FortiNAC report" without scraping the whole table.
+
+      If multiple rows match (e.g. multiple builds), they're all
+      returned in original order — typically newest first per how
+      SCAP renders the table. The CALLER decides which one to act on
+      (usually rows[0] = most recent).
+    parameters:
+      product:
+        type: string
+        required: true
+        description: "Product name substring, e.g. 'FortiNAC' or 'forticlient windows'. Case-insensitive."
+    page:
+      url: "https://scap.fortinet.com/reports/ffi"
+      on_target: "scap.fortinet.com/reports/ffi"
+    script: |
+      const table = document.querySelector('table.table-zebra');
+      if (!table) return { error: 'reports table not found on page' };
+
+      const needle = (args.product || '').toLowerCase().trim();
+      if (!needle) return { error: 'product parameter is empty' };
+
+      const matches = [...table.querySelectorAll('tbody tr')].map(tr => {
+        const cells = [...tr.querySelectorAll('td')];
+        const product = cells[1]?.textContent.trim() || '';
+        return { tr, cells, product };
+      }).filter(r => r.product.toLowerCase().includes(needle));
+
+      const rows = matches.map(({ cells, product }) => {
+        const pdfLinks = [...cells[cells.length - 1].querySelectorAll('a[href$=".pdf"], a[href*="/reports/pdf/"]')]
+          .map(a => ({ url: a.href, text: a.textContent.trim(), filename: a.href.split('/').pop() }));
+        return {
+          date:         cells[0]?.textContent.trim(),
+          product,
+          critical:     parseInt(cells[2]?.textContent.trim() || '0', 10),
+          high:         parseInt(cells[3]?.textContent.trim() || '0', 10),
+          medium:       parseInt(cells[4]?.textContent.trim() || '0', 10),
+          low:          parseInt(cells[5]?.textContent.trim() || '0', 10),
+          sast_pending: parseInt(cells[6]?.textContent.trim() || '0', 10),
+          sca_pending:  parseInt(cells[7]?.textContent.trim() || '0', 10),
+          pdfs:         pdfLinks,
+        };
+      });
+
+      return {
+        ok: true,
+        query: args.product,
+        match_count: rows.length,
+        rows,
+      };
+    returns: |
+      { ok: true, query: "...", match_count: N, rows: [...same row shape as list_reports...] }
