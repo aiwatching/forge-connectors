@@ -17,7 +17,7 @@
       "icon": "\ud83d\udee1\ufe0f",
       "version": "0.1.1",
       "author": "forge",
-      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the ssh  connector for queries. Host is supplied per call (NOT in settings); port/username/password are connector-level fallbacks. v0.1 \u2014 caller-explicit session key: login() \u2192 sessionKey \u2192 pass as  arg. v0.1 tools: login, logout, get_session_info, get_host_by_mac.",
+      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the ssh `nac` connector for queries. Host is supplied per call (NOT in settings); port/username/password are connector-level fallbacks. v0.1 \u2014 caller-explicit session key: login() \u2192 sessionKey \u2192 pass as `session_key` arg. v0.1 tools: login, logout, get_session_info, get_host_by_mac.",
       "min_forge_version": "0.9.17"
     },
     {
