@@ -5,43 +5,43 @@
     {
       "id": "nac",
       "name": "FortiNAC Device (direct)",
-      "icon": "🛡️",
+      "icon": "\ud83d\udee1\ufe0f",
       "version": "0.3.0",
       "author": "forge",
-      "description": "Direct FortiNAC appliance management over SSH — firmware upgrade (execute restore image scp, auto-answers y/N), version check, arbitrary CLI, reboot. Server-side via PTY. Pass host per-call from chat; port/username/password fall back to connector defaults.",
+      "description": "Direct FortiNAC appliance management over SSH \u2014 firmware upgrade (execute restore image scp, auto-answers y/N), version check, arbitrary CLI, reboot. Server-side via PTY. Pass host per-call from chat; port/username/password fall back to connector defaults.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "fortinac",
       "name": "FortiNAC Web (REST API)",
-      "icon": "🛡️",
-      "version": "0.1.0",
+      "icon": "\ud83d\udee1\ufe0f",
+      "version": "0.1.1",
       "author": "forge",
-      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the `nac` SSH connector for queries. v0.1 — caller-explicit session key: login() → sessionKey → pass as `session_key` arg to other tools. v0.1 tools: login, logout, get_session_info, get_host_by_mac. More host/policy/logging queries to come.",
+      "description": "FortiNAC REST API connector (HTTPS mgmt port, server-side). Complements the ssh  connector for queries. Host is supplied per call (NOT in settings); port/username/password are connector-level fallbacks. v0.1 \u2014 caller-explicit session key: login() \u2192 sessionKey \u2192 pass as  arg. v0.1 tools: login, logout, get_session_info, get_host_by_mac.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "tp",
       "name": "FortiNAC Test Platform",
-      "icon": "🧪",
+      "icon": "\ud83e\uddea",
       "version": "0.7.1",
       "author": "forge",
-      "description": "FortiNAC TP browser connector — NFR read/edit + weekly status + comments, plus automation (labs, testcases, pytest runs, results) and get_lab_devices. v0.7.x uses the v2 /adc/automation/pytest/ API; list_testcases walks the new recursive tree shape and supports search/prefix filters.",
+      "description": "FortiNAC TP browser connector \u2014 NFR read/edit + weekly status + comments, plus automation (labs, testcases, pytest runs, results) and get_lab_devices. v0.7.x uses the v2 /adc/automation/pytest/ API; list_testcases walks the new recursive tree shape and supports search/prefix filters.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "jenkins",
       "name": "Jenkins",
-      "icon": "🔧",
+      "icon": "\ud83d\udd27",
       "version": "0.1.5",
       "author": "forge",
-      "description": "Jenkins REST API connector — trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
+      "description": "Jenkins REST API connector \u2014 trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "mantis",
       "name": "MantisBT",
-      "icon": "🐞",
+      "icon": "\ud83d\udc1e",
       "version": "0.20.0",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
@@ -50,7 +50,7 @@
     {
       "id": "gitlab",
       "name": "GitLab",
-      "icon": "🦊",
+      "icon": "\ud83e\udd8a",
       "version": "1.7.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
@@ -59,7 +59,7 @@
     {
       "id": "teams",
       "name": "Microsoft Teams",
-      "icon": "💬",
+      "icon": "\ud83d\udcac",
       "version": "0.9.0",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
@@ -68,7 +68,7 @@
     {
       "id": "pmdb",
       "name": "PMDB",
-      "icon": "🏭",
+      "icon": "\ud83c\udfed",
       "version": "0.3.0",
       "author": "forge",
       "description": "Read-only DOM extraction from PMDB (Product Management Database) using the user's logged-in browser session.",
@@ -77,10 +77,10 @@
     {
       "id": "github-api",
       "name": "GitHub API",
-      "icon": "🐙",
+      "icon": "\ud83d\udc19",
       "version": "0.2.0",
       "author": "forge",
-      "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
+      "description": "GitHub REST API connector \u2014 runs entirely server-side. Optional PAT for private repos / higher rate limits.",
       "min_forge_version": "0.8.0"
     }
   ]
