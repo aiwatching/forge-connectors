@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.11.0"
+version: "0.12.0"
 author: forge
 category: connector
 mode: server-side
@@ -1798,3 +1798,134 @@ tools:
         Authorization: "{args.session_key}"
         Accept: "application/json"
     returns: "{ status, results: [{ sourceIP, message, timestamp, ... }] }"
+
+  # ─────────── Group writes (destructive) ───────────
+
+  add_devices_to_group:
+    description: |
+      Add one or more Network Devices to a Device group. The group's
+      members table gets the new entries; existing members are unchanged.
+
+      For HOST / PORT / USER groups, use call_api with path
+      'system/group/add-members' and the right `type` byte (host=1,
+      port=2, user=0, device=3 — discover via list_groups response
+      `type` field if unsure).
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      group_id:    { type: string, required: true, description: "Group record DBID." }
+      device_ids:  { type: string, required: true, description: "Comma-separated Network Device DBIDs, e.g. '1234' or '1234,5678'." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/system/group/{args.group_id}/add-devices?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        deviceList: "{args.device_ids}"
+    returns: "{ status, errorMessage }"
+
+  remove_devices_from_group:
+    description: |
+      Remove one or more Network Devices from a Device group. Other
+      members untouched. Same caveat as add_devices_to_group for
+      HOST / PORT / USER groups — use call_api with 'remove-members'.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      group_id:    { type: string, required: true, description: "Group record DBID." }
+      device_ids:  { type: string, required: true, description: "Comma-separated Network Device DBIDs." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/system/group/{args.group_id}/remove-devices?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        deviceList: "{args.device_ids}"
+    returns: "{ status, errorMessage }"
+
+  copy_group:
+    description: |
+      Create a copy of an existing group with a new name. Useful for
+      "duplicate the prod group and edit the copy" pattern when testing
+      group-membership-driven policy changes.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Source group DBID." }
+      name:        { type: string, required: true, description: "Name for the new copy. Must be unique within the same group type." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/system/group/copy?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        id: "{args.id}"
+        name: "{args.name}"
+    returns: "{ status, errorMessage, results: [Group] }"
+
+  update_group:
+    description: |
+      Update an existing group's metadata (name, description, access
+      policy id, aging settings, etc). Replaces the GroupDto record —
+      read the existing group first via list_groups so you don't drop
+      fields by omission.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Group record DBID." }
+      group_json:  { type: string, required: true, description: "Full GroupDto JSON. Common fields: name, description, accessPolicy (int), daysValid, daysInactive. Read existing first to preserve fields you don't mean to change." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/system/group/{args.id}?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.group_json}"
+    returns: "{ status, errorMessage, results: [Group] }"
+
+  delete_group:
+    description: |
+      Delete a group by DBID. Fails if the group is referenced by an
+      Access Policy, Authentication Config, or has active members
+      tied to policy evaluation. Highly destructive — preferred path
+      is to remove members first, then delete.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Group record DBID." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/system/group/{args.id}/delete?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"

@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (67 tools). v0.11 adds 10 integration read tools: MDM/SAML/syslog parser/vulnerability scanner/firewall tag lists, plus email/FSSO/SNMP/proxy global settings, plus get_recent_syslog_messages (debug what NAC has actually received).",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (72 tools). v0.12 adds 5 group writes: add/remove devices to/from a group, copy group, update GroupDto, delete group. For host/port/user groups use call_api with system/group/add-members (needs type byte).",
       "min_forge_version": "0.9.17"
     },
     {
