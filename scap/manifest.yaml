@@ -1,72 +1,66 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.2.0"
+version: "0.3.0"
 author: forge
 category: connector
-mode: hybrid
+mode: browser-side
 runner: main
 min_forge_version: "0.9.17"
 description: |
   Fortinet PSIRT SCAP reports — https://scap.fortinet.com/reports/ffi.
 
   Reads SAST/SCA scan results posted per Fortinet Federal Product build:
-  Critical / High / Medium / Low counts, PDF report link, AND a raw
-  scan-artifacts zip that contains the actual SARIF / Nessus / semgrep
-  / Mantis-mapping files used to drive remediation.
+  Critical/High/Medium/Low counts, PDF report link, AND a raw scan-
+  artifacts zip that contains the actual SARIF / Nessus / semgrep /
+  Mantis-mapping files used to drive remediation.
 
-  Auth:
-    • list_reports / find_for_product (browser-side)  — uses your
-      already-logged-in Chrome tab (no setup needed if you're signed
-      into https://scap.fortinet.com).
-    • extract_issues (shell, server-side)             — needs the
-      Django `sessionid` cookie value pasted into connector settings
-      (Chrome DevTools → Application → Cookies → scap.fortinet.com
-      → sessionid → copy value). Session lasts ~weeks; re-paste only
-      when expired.
+  Auth: nothing to configure. All tools run inside your already-
+  logged-in Chrome tab. Same-origin fetch() auto-attaches the httpOnly
+  Django sessionid cookie even though page-context JS can't read it.
+  Just keep a tab open on https://scap.fortinet.com (extension acquires
+  one on demand if none).
 
-  v0.2 tools:
+  v0.3 tools (all browser-side):
     list_reports          DOM scrape entire /reports/ffi table
     find_for_product      filter to one product (e.g. "FortiNAC")
-    extract_issues        download artifacts zip, parse mantis_vulns.csv
-                          + sast_semgrep_vulns.csv, return filtered list
-                          of HIGH/CRITICAL issues split into:
+    extract_issues        IN-TAB fetch of the artifacts zip, parse the
+                          ZIP container + the two canonical CSVs with
+                          pure-JS code (DecompressionStream for deflate,
+                          RFC4180 CSV reader). Filters by severity and
+                          returns:
                             known_mantis[] — already-filed Mantis bugs
-                                              (just trigger existing
-                                              fortinet-mantis-bug-fix-batch)
-                            new_sast[]     — semgrep findings without
-                                              a Mantis bug yet (need to
-                                              mantis.create_bug first)
+                                             (just trigger existing
+                                             fortinet-mantis-bug-fix-batch)
+                            new_sast[]     — new semgrep findings (need
+                                             mantis.create_bug first)
 
-  Coverage note (verified on FortiNAC-F 7.6, 1 crit + 52 high):
-    v0.2 extract_issues reads ONLY mantis_vulns + sast_semgrep_vulns.
-    Most of the "high" count visible on the page actually comes from
-    DAST + network scans (nuclei / nessus / burp / invicti / qualys-was
-    / dastardly / cryptolyzer / testssl). Those parsers go in v0.3.
-    For now, the most-actionable subset is what semgrep static analysis
-    flags — those are concrete code locations a fix pipeline can target.
+  Coverage (verified on FortiNAC-F 7.6, 1 crit + 52 high):
+    extract_issues parses mantis_vulns + sast_semgrep_vulns only. Most
+    of the "high" count on the page is actually from DAST + network
+    scans (nuclei / nessus / burp / invicti / qualys-was / dastardly /
+    cryptolyzer / testssl) — semgrep static-analysis findings are the
+    most-actionable subset (concrete code locations a fix pipeline
+    can target). DAST parsers come in v0.4.
+
+  v0.3 history note: v0.2 used a server-side shell tool with a
+  user-pasted sessionid cookie (httpOnly, page JS can't read it).
+  v0.3 moves to all-browser-side using same-origin fetch + inline JS
+  zip+CSV parsing — no setting needed, no manual paste. The shell
+  protocol path was removed.
 
   Roadmap:
-    v0.3  parse_dast_findings    nuclei JSONL + nessus CSV + invicti JSON
-                                  + burp HTML/CSV → unified findings list
-    v0.4  pipeline scap-product-blockers-to-mantis
+    v0.4  parse_dast_findings    nuclei JSONL + nessus CSV + invicti
+                                  JSON + burp HTML/CSV → unified list
+    v0.5  pipeline scap-product-blockers-to-mantis
           → find_for_product(product) → extract_issues(latest row's
             scan_artifacts_url) → known_mantis go to bug-fix-batch
           → new_sast first go through create_bug + same pipeline
 
 host_match: "https://scap.fortinet.com/*"
 
-settings:
-  sessionid:
-    type: secret
-    label: "scap.fortinet.com sessionid cookie"
-    description: |
-      Required ONLY for extract_issues (server-side download). Grab
-      from Chrome DevTools → Application → Cookies → scap.fortinet.com
-      → sessionid → copy the value. Session usually lasts weeks; if
-      extract_issues fails with auth error, re-paste.
-      browser-side tools (list_reports / find_for_product) don't use
-      this — they ride your live Chrome session.
+# No settings — auth rides the open Chrome tab's same-origin cookie.
+settings: {}
 
 tools:
   list_reports:
@@ -190,135 +184,210 @@ tools:
 
   extract_issues:
     description: |
-      Download a scan_artifacts_url zip, unpack it, and return the
-      filtered list of HIGH/CRITICAL issues split into:
+      Fetch the scan-artifacts zip from inside your logged-in tab,
+      parse it in JS (no server-side, no cookie paste), and return the
+      filtered HIGH/CRITICAL issue list split into:
 
         known_mantis[] — entries from mantis_vulns_*.csv
           { mantis_id, cve, cwe, cvss, severity, title }
-          These are vulnerabilities Fortinet PSIRT has ALREADY filed as
-          Mantis bugs. The mantis_id is the canonical reference — feed
-          straight to the fortinet-mantis-bug-fix-batch pipeline.
+          Vulnerabilities Fortinet PSIRT has ALREADY filed as Mantis
+          bugs. Feed mantis_id straight to fortinet-mantis-bug-fix-batch.
 
         new_sast[] — entries from sast_semgrep_vulns_*.csv
           { title, severity, cwe, cwe_text, summary, solution }
           New semgrep static-analysis findings without a Mantis bug
-          yet. The pipeline should call mantis.create_bug for each,
-          then feed the new id into bug-fix-batch.
+          yet. Pipeline should mantis.create_bug each, then feed the
+          new id into bug-fix-batch.
 
-      `severity_filter` default "high,critical". Pass "high,critical,medium"
-      to widen, or "critical" to narrow. Severity bucketing for the
-      mantis_vulns file (which only has CVSS, not a label):
-        cvss >= 9  → critical    >= 4 → medium
-        cvss >= 7  → high        >  0 → low
+      `severity_filter` default "high,critical". For the mantis_vulns
+      file (only has cvss, not a label), buckets are:
+        cvss >= 9 → critical,  >= 7 → high,  >= 4 → medium,  > 0 → low
 
-      Requires settings.sessionid to be set. Download is server-side
-      (curl -k for self-signed cert tolerance, follows redirects).
-    protocol: shell
+      Uses same-origin fetch() so the httpOnly Django sessionid cookie
+      is auto-attached. No connector setting needed.
     parameters:
       scan_artifacts_url:
         type: string
         required: true
-        description: "Full URL — get from list_reports / find_for_product's row.scan_artifacts_url field."
+        description: "Full URL from a row's scan_artifacts_url field (list_reports / find_for_product output)."
       severity_filter:
         type: string
         default: "high,critical"
-        description: "Comma-separated severity buckets to keep. Common: 'high,critical', 'critical', 'high,critical,medium'."
-    env:
-      SCAP_URL: "{args.scan_artifacts_url}"
-      SCAP_SID: "{settings.sessionid}"
-      SCAP_SEV: "{args.severity_filter}"
-    command:
-      - bash
-      - -c
-      - |
-        set -e
-        : "${SCAP_URL:?scan_artifacts_url empty}"
-        : "${SCAP_SID:?settings.sessionid empty — paste from browser DevTools per connector docs}"
-        SEV="${SCAP_SEV:-high,critical}"
+        description: "Comma-separated severity buckets to keep. e.g. 'high,critical' or 'critical' or 'high,critical,medium'."
+    page:
+      url: "https://scap.fortinet.com/reports/ffi"
+      on_target: "scap.fortinet.com"
+    script: |
+      // ── Fetch zip (httpOnly cookie auto-attached, same-origin) ──
+      const url = args.scan_artifacts_url;
+      const sev_filter = new Set(
+        (args.severity_filter || 'high,critical')
+          .toLowerCase().split(',').map(s => s.trim()).filter(Boolean));
 
-        DIR=$(mktemp -d /tmp/scap-extract.XXXXXX)
-        cd "$DIR"
+      let buf;
+      try {
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) return { error: `fetch ${url} → HTTP ${r.status}` };
+        buf = new Uint8Array(await r.arrayBuffer());
+      } catch (e) {
+        return { error: `fetch failed: ${e.message}` };
+      }
 
-        # Download — -k tolerates self-signed mgmt cert; -L follows redirects;
-        # -f makes non-2xx an error (so we don't quietly unzip an HTML login page)
-        if ! curl -k -sS -L -f -b "sessionid=$SCAP_SID" -o scan.zip "$SCAP_URL" 2>/tmp/curl.err; then
-          echo "ERROR: curl failed: $(cat /tmp/curl.err)" >&2
-          rm -rf "$DIR"; exit 1
-        fi
-        [ -s scan.zip ] || { echo "ERROR: downloaded zip is empty" >&2; rm -rf "$DIR"; exit 1; }
-        if ! file scan.zip | grep -qi 'zip archive'; then
-          echo "ERROR: downloaded file is not a zip — sessionid likely expired. First 200 bytes:" >&2
-          head -c 200 scan.zip >&2; echo >&2
-          rm -rf "$DIR"; exit 1
-        fi
+      // ── Minimal ZIP reader ──
+      const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      const u16 = (o) => dv.getUint16(o, true);
+      const u32 = (o) => dv.getUint32(o, true);
 
-        unzip -qo scan.zip
-        MANTIS_CSV=$(ls mantis_vulns_* 2>/dev/null | head -1)
-        SAST_CSV=$(ls sast_semgrep_vulns_*.csv 2>/dev/null | head -1)
+      // Find End of Central Directory (search last 65557 bytes)
+      const EOCD_SIG = 0x06054b50;
+      let eocd = -1;
+      for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+        if (u32(i) === EOCD_SIG) { eocd = i; break; }
+      }
+      if (eocd < 0) return { error: 'ZIP EOCD not found' };
+      const cdSize = u32(eocd + 12);
+      const cdOff = u32(eocd + 16);
+      const nEntries = u16(eocd + 10);
 
-        SEV="$SEV" MANTIS_CSV="$MANTIS_CSV" SAST_CSV="$SAST_CSV" DIR="$DIR" python3 <<'PY'
-        import csv, json, os
-        sev_filter = set(s.strip().lower() for s in os.environ['SEV'].split(','))
+      // Walk Central Directory entries
+      const entries = [];
+      const td = new TextDecoder('utf-8');
+      let off = cdOff;
+      for (let i = 0; i < nEntries; i++) {
+        if (u32(off) !== 0x02014b50) return { error: `CD entry ${i} bad signature at ${off}` };
+        const method = u16(off + 10);
+        const compSize = u32(off + 20);
+        const fnLen = u16(off + 28);
+        const extraLen = u16(off + 30);
+        const commentLen = u16(off + 32);
+        const localOff = u32(off + 42);
+        const name = td.decode(buf.subarray(off + 46, off + 46 + fnLen));
+        entries.push({ name, method, compSize, localOff });
+        off += 46 + fnLen + extraLen + commentLen;
+      }
 
-        def bucket_from_cvss(v):
-            try: c = float(v or 0)
-            except: return 'unknown'
-            if c >= 9:  return 'critical'
-            if c >= 7:  return 'high'
-            if c >= 4:  return 'medium'
-            if c >  0:  return 'low'
-            return 'unknown'
-
-        known = []
-        mc = os.environ.get('MANTIS_CSV') or ''
-        if mc and os.path.exists(mc):
-            with open(mc, newline='', encoding='utf-8', errors='replace') as f:
-                for r in csv.DictReader(f):
-                    sev = bucket_from_cvss(r.get('cvss'))
-                    if sev in sev_filter:
-                        known.append({
-                          'mantis_id': r.get('mantis_id','').strip(),
-                          'cve':       r.get('cve','').strip(),
-                          'cwe':       r.get('cwe','').strip(),
-                          'cvss':      float(r.get('cvss', 0) or 0),
-                          'severity':  sev,
-                          'title':     r.get('title','').strip(),
-                        })
-
-        new_sast = []
-        sc = os.environ.get('SAST_CSV') or ''
-        if sc and os.path.exists(sc):
-            with open(sc, newline='', encoding='utf-8', errors='replace') as f:
-                for r in csv.DictReader(f):
-                    sev = (r.get('severity','') or '').strip().lower()
-                    if sev in sev_filter:
-                        # Trim summary (often has long HTML <pre> code block)
-                        summary = (r.get('summary','') or '').strip()
-                        if len(summary) > 500:
-                            summary = summary[:500] + '… (truncated)'
-                        new_sast.append({
-                          'title':    r.get('title','').strip(),
-                          'severity': sev,
-                          'cwe':      r.get('cwe','').strip(),
-                          'cwe_text': r.get('cwe_text','').strip(),
-                          'summary':  summary,
-                          'solution': (r.get('solution','') or '').strip()[:300],
-                        })
-
-        out = {
-          'ok': True,
-          'extract_dir': os.environ['DIR'],
-          'severity_filter': os.environ['SEV'],
-          'known_mantis_count': len(known),
-          'new_sast_count':     len(new_sast),
-          'known_mantis':       known,
-          'new_sast':           new_sast,
+      async function readEntry(e) {
+        const lfnLen = u16(e.localOff + 26);
+        const lextraLen = u16(e.localOff + 28);
+        const dataStart = e.localOff + 30 + lfnLen + lextraLen;
+        const data = buf.subarray(dataStart, dataStart + e.compSize);
+        if (e.method === 0) return td.decode(data);             // stored
+        if (e.method === 8) {                                    // deflate
+          const stream = new Blob([data]).stream()
+            .pipeThrough(new DecompressionStream('deflate-raw'));
+          const reader = stream.getReader();
+          const chunks = [];
+          let total = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value); total += value.length;
+          }
+          const out = new Uint8Array(total);
+          let p = 0; for (const c of chunks) { out.set(c, p); p += c.length; }
+          return td.decode(out);
         }
-        print(json.dumps(out, ensure_ascii=False))
-        PY
-    timeout_ms: 60000
+        throw new Error(`unsupported zip compression method ${e.method} for ${e.name}`);
+      }
+
+      // ── Find the 2 canonical CSVs ──
+      const mantisEntry = entries.find(e => /^mantis_vulns_/.test(e.name));
+      const sastEntry   = entries.find(e => /^sast_semgrep_vulns_.*\.csv$/.test(e.name));
+
+      let mantisCsv = null, sastCsv = null;
+      try {
+        if (mantisEntry) mantisCsv = await readEntry(mantisEntry);
+        if (sastEntry)   sastCsv   = await readEntry(sastEntry);
+      } catch (e) {
+        return { error: `zip extract failed: ${e.message}` };
+      }
+
+      // ── Minimal RFC4180 CSV parser (handles quoted commas + newlines + "" escape) ──
+      function parseCsv(text) {
+        const rows = [];
+        let row = [], field = '', inQ = false, i = 0;
+        while (i < text.length) {
+          const ch = text[i];
+          if (inQ) {
+            if (ch === '"') {
+              if (text[i+1] === '"') { field += '"'; i += 2; continue; }
+              inQ = false; i++; continue;
+            }
+            field += ch; i++; continue;
+          }
+          if (ch === '"') { inQ = true; i++; continue; }
+          if (ch === ',') { row.push(field); field = ''; i++; continue; }
+          if (ch === '\r') { i++; continue; }
+          if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+          field += ch; i++;
+        }
+        if (field !== '' || row.length) { row.push(field); rows.push(row); }
+        // First row = headers; rest as dicts
+        if (!rows.length) return [];
+        const headers = rows[0].map(h => h.trim());
+        return rows.slice(1).filter(r => r.some(c => c.length))
+          .map(r => Object.fromEntries(headers.map((h, idx) => [h, r[idx] ?? ''])));
+      }
+
+      function bucketCvss(v) {
+        const c = parseFloat(v);
+        if (isNaN(c)) return 'unknown';
+        if (c >= 9) return 'critical';
+        if (c >= 7) return 'high';
+        if (c >= 4) return 'medium';
+        if (c >  0) return 'low';
+        return 'unknown';
+      }
+
+      const known_mantis = [];
+      if (mantisCsv) {
+        for (const r of parseCsv(mantisCsv)) {
+          const sev = bucketCvss(r.cvss);
+          if (!sev_filter.has(sev)) continue;
+          known_mantis.push({
+            mantis_id: (r.mantis_id || '').trim(),
+            cve:       (r.cve || '').trim(),
+            cwe:       (r.cwe || '').trim(),
+            cvss:      parseFloat(r.cvss) || 0,
+            severity:  sev,
+            title:     (r.title || '').trim(),
+          });
+        }
+      }
+
+      const new_sast = [];
+      if (sastCsv) {
+        for (const r of parseCsv(sastCsv)) {
+          const sev = (r.severity || '').trim().toLowerCase();
+          if (!sev_filter.has(sev)) continue;
+          let summary = (r.summary || '').trim();
+          if (summary.length > 500) summary = summary.slice(0, 500) + '… (truncated)';
+          new_sast.push({
+            title:    (r.title || '').trim(),
+            severity: sev,
+            cwe:      (r.cwe || '').trim(),
+            cwe_text: (r.cwe_text || '').trim(),
+            summary,
+            solution: (r.solution || '').trim().slice(0, 300),
+          });
+        }
+      }
+
+      return {
+        ok: true,
+        source_url: url,
+        zip_size_bytes: buf.length,
+        severity_filter: [...sev_filter].join(','),
+        mantis_csv_found: !!mantisCsv,
+        sast_csv_found:   !!sastCsv,
+        known_mantis_count: known_mantis.length,
+        new_sast_count:     new_sast.length,
+        known_mantis,
+        new_sast,
+      };
     returns: |
-      { ok, extract_dir, severity_filter,
+      { ok, source_url, zip_size_bytes, severity_filter,
+        mantis_csv_found, sast_csv_found,
         known_mantis_count, new_sast_count,
         known_mantis: [ { mantis_id, cve, cwe, cvss, severity, title } ],
         new_sast:     [ { title, severity, cwe, cwe_text, summary, solution } ] }
