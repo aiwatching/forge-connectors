@@ -1,7 +1,7 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.1.0"
+version: "0.1.1"
 author: forge
 category: connector
 mode: browser-side
@@ -30,7 +30,7 @@ description: |
     v0.4  pipeline scap-product-blockers-to-mantis (auto-file Mantis bugs
           for HIGH/CRITICAL blockers, hand off to fortinet-mantis-bug-fix-batch)
 
-host_match: "scap.fortinet.com"
+host_match: "https://scap.fortinet.com/*"
 
 # Browser session is enough — no settings needed.
 settings: {}

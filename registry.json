@@ -78,7 +78,7 @@
       "id": "scap",
       "name": "SCAP (Fortinet PSIRT)",
       "icon": "\ud83d\udd12",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": "forge",
       "description": "Fortinet PSIRT SCAP \u2014 reads the /reports/ffi table (Critical/High/Medium/Low counts per product build + report PDF URLs). v0.1: list_reports + find_for_product (browser DOM scrape, uses your logged-in Chrome session). Roadmap v0.2-0.4: PDF text extraction + auto-create Mantis bugs for blockers.",
       "min_forge_version": "0.9.17"
