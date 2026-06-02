@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": "forge",
-      "description": "FortiNAC appliance management \u2014 SSH/CLI plus REST API in one connector. SSH tools (upgrade / get_version / run_command / reboot) for OS-level ops; REST tools (login / logout / get_session_info / get_host_by_mac) for structured queries. Pass host per-call; username/password in settings. http.verify_tls=false handles the self-signed cert on every NAC.",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (one connector, one credential pair). v0.5: REST tools rewritten for the real /actions/ base + JSESSIONID cookie + Authorization sessionKey scheme used by NAC 7.6 GUI (verified via Chrome DevTools probe). login() returns sessionKey in body + JSESSIONID via captured set-cookie preamble; subsequent tools take jsessionid + session_key args.",
       "min_forge_version": "0.9.17"
     },
     {
