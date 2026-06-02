@@ -1,7 +1,7 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.1.1"
+version: "0.1.2"
 author: forge
 category: connector
 mode: browser-side
@@ -56,15 +56,16 @@ tools:
 
       const headerCells = [...table.querySelectorAll('thead th, thead td')]
         .map(th => th.textContent.trim());
-      const rows = [...table.querySelectorAll('tbody tr')].map(tr => {
+      // Per-row link extractor — last cell has icons distinguished by
+      // data-tip ("PDF Report" vs "Scan Artifacts"). UUID at the tail
+      // of each URL is shared, useful as a join key.
+      function rowFromTr(tr) {
         const cells = [...tr.querySelectorAll('td')];
-        const pdfLinks = [...tr.querySelectorAll('a[href$=".pdf"], a[href*="/reports/pdf/"]')]
-          .map(a => ({
-            url: a.href,
-            text: a.textContent.trim() || a.getAttribute('title') || '',
-            // Pull build identifier out of URL filename
-            filename: a.href.split('/').pop(),
-          }));
+        const lastCell = cells[cells.length - 1];
+        const links = [...(lastCell?.querySelectorAll('a') ?? [])];
+        const pdfA = links.find(a => (a.getAttribute('data-tip') || '').toLowerCase().includes('pdf')) || links.find(a => a.href.includes('/reports/pdf/'));
+        const zipA = links.find(a => (a.getAttribute('data-tip') || '').toLowerCase().includes('artifact')) || links.find(a => a.href.includes('/artifacts/'));
+        const uuidMatch = (pdfA?.href || zipA?.href || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
         return {
           date:         cells[0]?.textContent.trim(),
           product:      cells[1]?.textContent.trim(),
@@ -74,9 +75,12 @@ tools:
           low:          parseInt(cells[5]?.textContent.trim() || '0', 10),
           sast_pending: parseInt(cells[6]?.textContent.trim() || '0', 10),
           sca_pending:  parseInt(cells[7]?.textContent.trim() || '0', 10),
-          pdfs:         pdfLinks,
+          uuid:         uuidMatch ? uuidMatch[1] : null,
+          report_pdf_url:    pdfA?.href || null,
+          scan_artifacts_url: zipA?.href || null,
         };
-      });
+      }
+      const rows = [...table.querySelectorAll('tbody tr')].map(rowFromTr);
 
       return {
         ok: true,
@@ -87,7 +91,7 @@ tools:
     returns: |
       { ok: true, headers: [...], count: N, rows: [
         { date, product, critical, high, medium, low, sast_pending, sca_pending,
-          pdfs: [ { url, text, filename } ] }
+          uuid, report_pdf_url, scan_artifacts_url }
       ] }
 
   find_for_product:
@@ -121,9 +125,12 @@ tools:
         return { tr, cells, product };
       }).filter(r => r.product.toLowerCase().includes(needle));
 
-      const rows = matches.map(({ cells, product }) => {
-        const pdfLinks = [...cells[cells.length - 1].querySelectorAll('a[href$=".pdf"], a[href*="/reports/pdf/"]')]
-          .map(a => ({ url: a.href, text: a.textContent.trim(), filename: a.href.split('/').pop() }));
+      const rows = matches.map(({ tr, cells, product }) => {
+        const lastCell = cells[cells.length - 1];
+        const links = [...(lastCell?.querySelectorAll('a') ?? [])];
+        const pdfA = links.find(a => (a.getAttribute('data-tip') || '').toLowerCase().includes('pdf')) || links.find(a => a.href.includes('/reports/pdf/'));
+        const zipA = links.find(a => (a.getAttribute('data-tip') || '').toLowerCase().includes('artifact')) || links.find(a => a.href.includes('/artifacts/'));
+        const uuidMatch = (pdfA?.href || zipA?.href || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/);
         return {
           date:         cells[0]?.textContent.trim(),
           product,
@@ -133,7 +140,9 @@ tools:
           low:          parseInt(cells[5]?.textContent.trim() || '0', 10),
           sast_pending: parseInt(cells[6]?.textContent.trim() || '0', 10),
           sca_pending:  parseInt(cells[7]?.textContent.trim() || '0', 10),
-          pdfs:         pdfLinks,
+          uuid:         uuidMatch ? uuidMatch[1] : null,
+          report_pdf_url:    pdfA?.href || null,
+          scan_artifacts_url: zipA?.href || null,
         };
       });
 
