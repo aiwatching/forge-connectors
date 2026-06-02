@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.7.0"
+version: "0.9.0"
 author: forge
 category: connector
 mode: server-side
@@ -1032,6 +1032,289 @@ tools:
     request:
       method: POST
       url: "https://{args.host}:{args.port}/actions/host/dpc-hosts-table/validate?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&ids={args.ids}"
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"
+
+  # ─────────── Network ops (destructive) ───────────
+
+  set_port_properties:
+    description: |
+      Set administration properties on a switch port — VLAN, admin
+      state (enable/disable), uplink mode, description, label, notes,
+      etc. The workhorse for "fix the port's VLAN" Mantis bugs.
+
+      `properties_json` is the full PortPropertiesRequest payload.
+      Minimum useful shape (look up the current port first via get_port
+      to see what NOT to overwrite):
+        {"id": <port_dbid>, "currentVlan": "10", "desc": "QA-VLAN"}
+      Common fields:
+        id          (required, port DBID)
+        currentVlan (string VLAN id)
+        adminStatus ("up" | "down")
+        uplinkMode  (0=normal, 1=uplink)
+        desc        free-text description
+        label       short tag
+        note        operator note
+    destructive: true
+    protocol: http
+    parameters:
+      host:           { type: string, required: true }
+      port:           { type: number, default: 8443 }
+      jsessionid:     { type: string, required: true }
+      session_key:    { type: string, required: true }
+      properties_json: { type: string, required: true, description: "JSON-encoded PortPropertiesRequest. Must include `id`. See tool description for common fields." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/device/port/properties?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.properties_json}"
+    returns: "{ status, errorMessage }"
+
+  start_l3_scan:
+    description: |
+      Start an L3 scan — NAC probes the network from L3 sources to
+      discover endpoints by IP. Useful after a routing / VLAN config
+      change to confirm devices reappear on the expected segment.
+
+      Long-running. Use call_api 'device/l3scan/status' to poll.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/device/l3scan/start?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"
+
+  stop_l3_scan:
+    description: "Stop an in-progress L3 scan."
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/device/l3scan/stop?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"
+
+  start_device_discovery:
+    description: |
+      Start device discovery — NAC reaches into one or more IP ranges
+      (or specific seed IPs) and registers anything that responds as a
+      Network Device, adding it to the specified Container. Use to
+      onboard new switches after rack-install Mantis tickets.
+
+      `discovery_data_json` is a JSON ARRAY of DiscoveryData objects.
+      Each entry has:
+        { "containerName": "MyContainer",
+          "ipRanges": ["10.1.1.0/24", "10.2.0.1-10.2.0.50"],
+          "seeds":    ["192.168.1.1"],          # optional, specific IPs
+          "snmpRead": "public", "snmpWrite": "public",
+          ... other discovery params }
+      Most users only need containerName + ipRanges. SNMP creds come
+      from NAC's saved settings if omitted.
+    destructive: true
+    protocol: http
+    parameters:
+      host:                  { type: string, required: true }
+      port:                  { type: number, default: 8443 }
+      jsessionid:            { type: string, required: true }
+      session_key:           { type: string, required: true }
+      discovery_data_json:   { type: string, required: true, description: "JSON ARRAY of DiscoveryData. See tool description for shape." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/device/discovery/discover?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.discovery_data_json}"
+    returns: "{ status, errorMessage }"
+
+  stop_device_discovery:
+    description: "Stop discovery for one container (by name)."
+    destructive: true
+    protocol: http
+    parameters:
+      host:           { type: string, required: true }
+      port:           { type: number, default: 8443 }
+      jsessionid:     { type: string, required: true }
+      session_key:    { type: string, required: true }
+      container_name: { type: string, required: true, description: "Container name (the same one start_device_discovery was launched with)." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/device/discovery/discover/stop?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        containerName: "{args.container_name}"
+    returns: "{ status, errorMessage }"
+
+  # ─────────── Access Policy management (destructive) ───────────
+  # Policies are evaluated in rank order (1 = highest). Each policy
+  # matches based on its Access Configuration (groups, time, location)
+  # and routes the host to a specific network access profile.
+  # Use list_access_policies (read tool, v0.6) to discover ids + ranks.
+
+  enable_access_policy:
+    description: "Enable an Access Policy so it participates in evaluation. Disabled policies are skipped."
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Access Policy DBID." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access/{args.id}/enable?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"
+
+  disable_access_policy:
+    description: "Disable an Access Policy so it is skipped during evaluation."
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Access Policy DBID." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access/{args.id}/disable?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+    returns: "{ status, errorMessage }"
+
+  swap_access_policy_rank:
+    description: |
+      Swap the rank positions of two Access Policies. Policies are
+      evaluated in rank order so this changes precedence. Less
+      disruptive than set_access_policy_rank because it only touches
+      two policies (no cascading shift).
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id1:         { type: string, required: true, description: "First Access Policy DBID." }
+      id2:         { type: string, required: true, description: "Second Access Policy DBID." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access/rank/swap?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        id1: "{args.id1}"
+        id2: "{args.id2}"
+    returns: "{ status, errorMessage }"
+
+  set_access_policy_rank:
+    description: |
+      Set the absolute rank of an Access Policy. Other policies'
+      ranks shift to make room. Riskier than swap_access_policy_rank —
+      use only when you're inserting a NEW policy at a specific spot.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Access Policy DBID." }
+      rank:        { type: number, required: true, description: "Target rank (1 = highest precedence)." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access/rank/set?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+      body_form:
+        id: "{args.id}"
+        rank: "{args.rank}"
+    returns: "{ status, errorMessage }"
+
+  update_access_policy:
+    description: |
+      Create or update an Access Policy. POST shape is the full
+      AccessPolicy schema (JSON). If `id` field is present and matches
+      an existing record, NAC updates; otherwise creates new.
+
+      `policy_json` is the full AccessPolicy payload — read the
+      existing policy first via call_api path='policy/access/{id}' so
+      you don't drop fields you didn't mean to change.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      policy_json: { type: string, required: true, description: "Full AccessPolicy JSON (include all fields you want preserved — this is a replace, not a merge)." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      headers:
+        Cookie: "JSESSIONID={args.jsessionid}"
+        Authorization: "{args.session_key}"
+        Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.policy_json}"
+    returns: "{ status, errorMessage, results: [AccessPolicy] }"
+
+  delete_access_policy:
+    description: |
+      Delete an Access Policy by DBID. Fails if the policy is in use.
+      Highly destructive — prefer disable_access_policy unless you're
+      sure no host has been routed through it recently.
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      port:        { type: number, default: 8443 }
+      jsessionid:  { type: string, required: true }
+      session_key: { type: string, required: true }
+      id:          { type: string, required: true, description: "Access Policy DBID." }
+    request:
+      method: POST
+      url: "https://{args.host}:{args.port}/actions/policy/access/{args.id}/delete?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
       headers:
         Cookie: "JSESSIONID={args.jsessionid}"
         Authorization: "{args.session_key}"
