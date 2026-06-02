@@ -1,39 +1,72 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.1.2"
+version: "0.2.0"
 author: forge
 category: connector
-mode: browser-side
+mode: hybrid
 runner: main
 min_forge_version: "0.9.17"
 description: |
   Fortinet PSIRT SCAP reports — https://scap.fortinet.com/reports/ffi.
 
-  Reads the latest SAST/SCA scan results posted for each Fortinet Federal
-  Product. Tells you Critical / High / Medium / Low counts per build and
-  links to the per-build PDF report.
+  Reads SAST/SCA scan results posted per Fortinet Federal Product build:
+  Critical / High / Medium / Low counts, PDF report link, AND a raw
+  scan-artifacts zip that contains the actual SARIF / Nessus / semgrep
+  / Mantis-mapping files used to drive remediation.
 
-  Auth: leverages the user's already-logged-in Chrome session (Django
-  sessionid cookie). To use:
-    1. Log in to https://scap.fortinet.com once in your browser.
-    2. Keep the tab open (or open one on demand — Forge's runner will).
-    3. Call tools from chat / pipelines.
+  Auth:
+    • list_reports / find_for_product (browser-side)  — uses your
+      already-logged-in Chrome tab (no setup needed if you're signed
+      into https://scap.fortinet.com).
+    • extract_issues (shell, server-side)             — needs the
+      Django `sessionid` cookie value pasted into connector settings
+      (Chrome DevTools → Application → Cookies → scap.fortinet.com
+      → sessionid → copy value). Session lasts ~weeks; re-paste only
+      when expired.
 
-  v0.1 surface (read-only DOM scrape):
-    - list_reports          all rows from the FFI reports table
-    - find_for_product      filter by product name substring
+  v0.2 tools:
+    list_reports          DOM scrape entire /reports/ffi table
+    find_for_product      filter to one product (e.g. "FortiNAC")
+    extract_issues        download artifacts zip, parse mantis_vulns.csv
+                          + sast_semgrep_vulns.csv, return filtered list
+                          of HIGH/CRITICAL issues split into:
+                            known_mantis[] — already-filed Mantis bugs
+                                              (just trigger existing
+                                              fortinet-mantis-bug-fix-batch)
+                            new_sast[]     — semgrep findings without
+                                              a Mantis bug yet (need to
+                                              mantis.create_bug first)
+
+  Coverage note (verified on FortiNAC-F 7.6, 1 crit + 52 high):
+    v0.2 extract_issues reads ONLY mantis_vulns + sast_semgrep_vulns.
+    Most of the "high" count visible on the page actually comes from
+    DAST + network scans (nuclei / nessus / burp / invicti / qualys-was
+    / dastardly / cryptolyzer / testssl). Those parsers go in v0.3.
+    For now, the most-actionable subset is what semgrep static analysis
+    flags — those are concrete code locations a fix pipeline can target.
 
   Roadmap:
-    v0.2  download_pdf + extract_pdf_text  (binary fetch + text)
-    v0.3  parse_issues_by_severity         (LLM-friendly issue list)
-    v0.4  pipeline scap-product-blockers-to-mantis (auto-file Mantis bugs
-          for HIGH/CRITICAL blockers, hand off to fortinet-mantis-bug-fix-batch)
+    v0.3  parse_dast_findings    nuclei JSONL + nessus CSV + invicti JSON
+                                  + burp HTML/CSV → unified findings list
+    v0.4  pipeline scap-product-blockers-to-mantis
+          → find_for_product(product) → extract_issues(latest row's
+            scan_artifacts_url) → known_mantis go to bug-fix-batch
+          → new_sast first go through create_bug + same pipeline
 
 host_match: "https://scap.fortinet.com/*"
 
-# Browser session is enough — no settings needed.
-settings: {}
+settings:
+  sessionid:
+    type: secret
+    label: "scap.fortinet.com sessionid cookie"
+    description: |
+      Required ONLY for extract_issues (server-side download). Grab
+      from Chrome DevTools → Application → Cookies → scap.fortinet.com
+      → sessionid → copy the value. Session usually lasts weeks; if
+      extract_issues fails with auth error, re-paste.
+      browser-side tools (list_reports / find_for_product) don't use
+      this — they ride your live Chrome session.
 
 tools:
   list_reports:
@@ -154,3 +187,138 @@ tools:
       };
     returns: |
       { ok: true, query: "...", match_count: N, rows: [...same row shape as list_reports...] }
+
+  extract_issues:
+    description: |
+      Download a scan_artifacts_url zip, unpack it, and return the
+      filtered list of HIGH/CRITICAL issues split into:
+
+        known_mantis[] — entries from mantis_vulns_*.csv
+          { mantis_id, cve, cwe, cvss, severity, title }
+          These are vulnerabilities Fortinet PSIRT has ALREADY filed as
+          Mantis bugs. The mantis_id is the canonical reference — feed
+          straight to the fortinet-mantis-bug-fix-batch pipeline.
+
+        new_sast[] — entries from sast_semgrep_vulns_*.csv
+          { title, severity, cwe, cwe_text, summary, solution }
+          New semgrep static-analysis findings without a Mantis bug
+          yet. The pipeline should call mantis.create_bug for each,
+          then feed the new id into bug-fix-batch.
+
+      `severity_filter` default "high,critical". Pass "high,critical,medium"
+      to widen, or "critical" to narrow. Severity bucketing for the
+      mantis_vulns file (which only has CVSS, not a label):
+        cvss >= 9  → critical    >= 4 → medium
+        cvss >= 7  → high        >  0 → low
+
+      Requires settings.sessionid to be set. Download is server-side
+      (curl -k for self-signed cert tolerance, follows redirects).
+    protocol: shell
+    parameters:
+      scan_artifacts_url:
+        type: string
+        required: true
+        description: "Full URL — get from list_reports / find_for_product's row.scan_artifacts_url field."
+      severity_filter:
+        type: string
+        default: "high,critical"
+        description: "Comma-separated severity buckets to keep. Common: 'high,critical', 'critical', 'high,critical,medium'."
+    env:
+      SCAP_URL: "{args.scan_artifacts_url}"
+      SCAP_SID: "{settings.sessionid}"
+      SCAP_SEV: "{args.severity_filter}"
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        : "${SCAP_URL:?scan_artifacts_url empty}"
+        : "${SCAP_SID:?settings.sessionid empty — paste from browser DevTools per connector docs}"
+        SEV="${SCAP_SEV:-high,critical}"
+
+        DIR=$(mktemp -d /tmp/scap-extract.XXXXXX)
+        cd "$DIR"
+
+        # Download — -k tolerates self-signed mgmt cert; -L follows redirects;
+        # -f makes non-2xx an error (so we don't quietly unzip an HTML login page)
+        if ! curl -k -sS -L -f -b "sessionid=$SCAP_SID" -o scan.zip "$SCAP_URL" 2>/tmp/curl.err; then
+          echo "ERROR: curl failed: $(cat /tmp/curl.err)" >&2
+          rm -rf "$DIR"; exit 1
+        fi
+        [ -s scan.zip ] || { echo "ERROR: downloaded zip is empty" >&2; rm -rf "$DIR"; exit 1; }
+        if ! file scan.zip | grep -qi 'zip archive'; then
+          echo "ERROR: downloaded file is not a zip — sessionid likely expired. First 200 bytes:" >&2
+          head -c 200 scan.zip >&2; echo >&2
+          rm -rf "$DIR"; exit 1
+        fi
+
+        unzip -qo scan.zip
+        MANTIS_CSV=$(ls mantis_vulns_* 2>/dev/null | head -1)
+        SAST_CSV=$(ls sast_semgrep_vulns_*.csv 2>/dev/null | head -1)
+
+        SEV="$SEV" MANTIS_CSV="$MANTIS_CSV" SAST_CSV="$SAST_CSV" DIR="$DIR" python3 <<'PY'
+        import csv, json, os
+        sev_filter = set(s.strip().lower() for s in os.environ['SEV'].split(','))
+
+        def bucket_from_cvss(v):
+            try: c = float(v or 0)
+            except: return 'unknown'
+            if c >= 9:  return 'critical'
+            if c >= 7:  return 'high'
+            if c >= 4:  return 'medium'
+            if c >  0:  return 'low'
+            return 'unknown'
+
+        known = []
+        mc = os.environ.get('MANTIS_CSV') or ''
+        if mc and os.path.exists(mc):
+            with open(mc, newline='', encoding='utf-8', errors='replace') as f:
+                for r in csv.DictReader(f):
+                    sev = bucket_from_cvss(r.get('cvss'))
+                    if sev in sev_filter:
+                        known.append({
+                          'mantis_id': r.get('mantis_id','').strip(),
+                          'cve':       r.get('cve','').strip(),
+                          'cwe':       r.get('cwe','').strip(),
+                          'cvss':      float(r.get('cvss', 0) or 0),
+                          'severity':  sev,
+                          'title':     r.get('title','').strip(),
+                        })
+
+        new_sast = []
+        sc = os.environ.get('SAST_CSV') or ''
+        if sc and os.path.exists(sc):
+            with open(sc, newline='', encoding='utf-8', errors='replace') as f:
+                for r in csv.DictReader(f):
+                    sev = (r.get('severity','') or '').strip().lower()
+                    if sev in sev_filter:
+                        # Trim summary (often has long HTML <pre> code block)
+                        summary = (r.get('summary','') or '').strip()
+                        if len(summary) > 500:
+                            summary = summary[:500] + '… (truncated)'
+                        new_sast.append({
+                          'title':    r.get('title','').strip(),
+                          'severity': sev,
+                          'cwe':      r.get('cwe','').strip(),
+                          'cwe_text': r.get('cwe_text','').strip(),
+                          'summary':  summary,
+                          'solution': (r.get('solution','') or '').strip()[:300],
+                        })
+
+        out = {
+          'ok': True,
+          'extract_dir': os.environ['DIR'],
+          'severity_filter': os.environ['SEV'],
+          'known_mantis_count': len(known),
+          'new_sast_count':     len(new_sast),
+          'known_mantis':       known,
+          'new_sast':           new_sast,
+        }
+        print(json.dumps(out, ensure_ascii=False))
+        PY
+    timeout_ms: 60000
+    returns: |
+      { ok, extract_dir, severity_filter,
+        known_mantis_count, new_sast_count,
+        known_mantis: [ { mantis_id, cve, cwe, cvss, severity, title } ],
+        new_sast:     [ { title, severity, cwe, cwe_text, summary, solution } ] }
