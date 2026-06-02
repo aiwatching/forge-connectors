@@ -1,0 +1,243 @@
+id: blackduck
+name: Black Duck
+icon: 🦆
+version: "0.1.0"
+author: forge
+category: connector
+mode: server-side
+min_forge_version: "0.9.17"
+description: |
+  Synopsys / Black Duck SCA — query 3rd-party library vulnerabilities,
+  components, and risk profiles for any project version.
+
+  Auth: standard 2-step token exchange. You configure a long-lived API
+  token (BD UI: User → My Access Tokens), Forge POSTs it to
+  /api/tokens/authenticate on first call to get a ~2h bearer JWT, then
+  caches and reuses that JWT (auto-refresh near expiry). The exchange
+  uses the new `bearer-token-exchange` auth scheme — see lib/connectors/
+  types.ts.
+
+  v0.1 tool set (READ-ONLY):
+    list_projects             paginated, optional name filter
+    find_project              by name → single project + canonical version
+    list_versions             versions of a project, newest first
+    get_risk_profile          aggregate counts (CRITICAL/HIGH/MEDIUM/LOW
+                              across VULNERABILITY/OPERATIONAL/LICENSE/…)
+    list_vulnerabilities      vulnerable BOM components for a version
+                              — the canonical "what CVEs hit which libs"
+                                table; filter by severity
+    list_components           full BOM components for a version
+
+  Designed to cross-validate the SCAP connector's SCA section: same
+  project + version on both sides should produce overlapping
+  CVE / BDSA lists.
+
+# Top-level auth — every HTTP tool inherits. The bearer JWT lives in
+# Forge's in-memory cache for ~2h.
+auth:
+  type: bearer-token-exchange
+  api_token: "{settings.api_token}"
+  exchange_url: "{settings.base_url}/api/tokens/authenticate"
+  exchange_method: POST
+  exchange_auth_header: "token {settings.api_token}"
+  exchange_headers:
+    Accept: "application/vnd.blackducksoftware.user-4+json"
+  bearer_path: bearerToken
+  expires_path: expiresInMilliseconds
+
+http:
+  verify_tls: false  # internal BD instances often self-signed
+
+settings:
+  base_url:
+    type: string
+    label: "Black Duck base URL"
+    description: "e.g. https://dops-blackduck.fortinet-us.com (no trailing slash)"
+    required: true
+  api_token:
+    type: secret
+    label: "API token"
+    description: "BD UI → User → My Access Tokens → Create New Token (scope: read)"
+    required: true
+
+test:
+  description: "GET /api/current-version — verifies base_url + token exchange + bearer works end-to-end."
+  request:
+    method: GET
+    url: "{settings.base_url}/api/current-version"
+  ok_template: "Connected · Black Duck v{{version}}"
+  timeout_ms: 20000
+
+tools:
+  list_projects:
+    description: |
+      List Black Duck projects. Use `name` for substring filter; omit
+      for full list. Returns id, name, createdAt, _meta.href.
+    parameters:
+      name:
+        type: string
+        description: "Optional name filter (Black Duck does substring + prefix match)."
+      limit:
+        type: integer
+        default: 25
+        description: "Page size (1–100)."
+      offset:
+        type: integer
+        default: 0
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects"
+      query:
+        q: "name:{args.name}"
+        limit: "{args.limit}"
+        offset: "{args.offset}"
+    items_path: items
+    response_fields:
+      - name
+      - createdAt
+      - updatedAt
+      - _meta.href
+
+  find_project:
+    description: |
+      Find a single project by exact-ish name (BD does prefix match);
+      returns id + canonical version + versions URL. Use when you
+      know the project name and want to dive into its versions
+      without paging through list_projects.
+    parameters:
+      name:
+        type: string
+        required: true
+        description: "Project name (e.g. FortiNAC-F-7.6.7)."
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects"
+      query:
+        q: "name:{args.name}"
+        limit: "5"
+    items_path: items
+
+  list_versions:
+    description: |
+      List versions of a project, newest first. `project_id` is the
+      UUID from list_projects/find_project (last URL segment of _meta.href).
+    parameters:
+      project_id:
+        type: string
+        required: true
+        description: "Project UUID."
+      limit:
+        type: integer
+        default: 20
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects/{args.project_id}/versions"
+      query:
+        limit: "{args.limit}"
+        sort: "createdAt desc"
+    items_path: items
+    response_fields:
+      - versionName
+      - phase
+      - createdAt
+      - _meta.href
+
+  get_risk_profile:
+    description: |
+      Aggregate risk counts for a project version — total
+      VULNERABILITY / OPERATIONAL / LICENSE / VERSION / ACTIVITY
+      buckets, each broken into CRITICAL / HIGH / MEDIUM / LOW / OK.
+      The `categories.VULNERABILITY` block matches the BD UI's
+      "Security risks" pie chart for the version. Use this as the
+      quick sanity check vs SCAP PDF's SCA donut.
+    parameters:
+      project_id:
+        type: string
+        required: true
+      version_id:
+        type: string
+        required: true
+        description: "Version UUID (last URL segment of versions[i]._meta.href)."
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects/{args.project_id}/versions/{args.version_id}/risk-profile"
+
+  list_vulnerabilities:
+    description: |
+      List vulnerable BOM components for a project version. Each item
+      is a (componentVersion, vulnerability) pair — so one CVE that
+      hits 3 different lib versions shows up 3 times. This is the
+      canonical "what CVEs/BDSAs hit which libs" view.
+
+      severity_filter is sent server-side (filter=securityRisk:CRITICAL,
+      etc.). Omit to get everything.
+    parameters:
+      project_id:
+        type: string
+        required: true
+      version_id:
+        type: string
+        required: true
+      severity_filter:
+        type: string
+        description: "Comma-separated: CRITICAL,HIGH,MEDIUM,LOW. e.g. 'CRITICAL,HIGH'."
+      limit:
+        type: integer
+        default: 100
+        description: "Page size (BD max ~1000)."
+      offset:
+        type: integer
+        default: 0
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects/{args.project_id}/versions/{args.version_id}/vulnerable-bom-components"
+      query:
+        limit: "{args.limit}"
+        offset: "{args.offset}"
+        filter: "securityRisk:{args.severity_filter}"
+    items_path: items
+    response_fields:
+      - componentName
+      - componentVersionName
+      - componentVersionOriginName
+      - vulnerabilityWithRemediation.vulnerabilityName
+      - vulnerabilityWithRemediation.severity
+      - vulnerabilityWithRemediation.baseScore
+      - vulnerabilityWithRemediation.remediationStatus
+
+  list_components:
+    description: |
+      Full BOM (Bill Of Materials) — every 3rd-party library in this
+      project version, regardless of whether it has vulnerabilities.
+      Use to map "this build ships X v1.2.3" without the vuln noise.
+    parameters:
+      project_id:
+        type: string
+        required: true
+      version_id:
+        type: string
+        required: true
+      limit:
+        type: integer
+        default: 100
+      offset:
+        type: integer
+        default: 0
+    protocol: http
+    request:
+      method: GET
+      url: "{settings.base_url}/api/projects/{args.project_id}/versions/{args.version_id}/components"
+      query:
+        limit: "{args.limit}"
+        offset: "{args.offset}"
+    items_path: items
+    response_fields:
+      - componentName
+      - componentVersionName
+      - componentVersionOriginName
+      - licenses
