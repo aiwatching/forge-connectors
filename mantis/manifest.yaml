@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.22.0"
+version: "0.23.0"
 author: forge
 category: connector
 mode: browser-side
@@ -603,34 +603,38 @@ tools:
       const baseDir = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}`;
 
       // ── Resolve args.project_name → numeric id ────────────────
-      // The top-right project switcher renders ALL projects the user
-      // can see; we mine its <option> list. Match is case-insensitive
-      // and ignores the "#N " display prefix Mantis prepends to each
-      // option (so "MyProject" matches "#17 MyProject"). If args.project_id
-      // is also set, it wins (explicit id always overrides resolution).
+      // EXACT match only (case-insensitive, ignoring the "#N " display
+      // prefix Mantis prepends). Substring fallback was removed in v0.23
+      // because installs with "FortiNAC" + "FortiNAC Driver" + ... made
+      // the first-substring-wins logic silently pick the wrong project.
+      // If args.project_id is set it wins (explicit id always overrides).
       let resolvedProjectId = args.project_id ? String(args.project_id) : '';
       let resolvedProjectName = '';
       if (!resolvedProjectId && args.project_name) {
-        // Strip the "#N " prefix from BOTH input and option text so the
-        // resolver works whether the user passes the bare name or
-        // copies the full display label including the "#N " prefix.
         const norm = (s) => String(s).replace(/^\s*#\d+\s+/, '').trim().toLowerCase();
         const wanted = norm(args.project_name);
         const switchForm = Array.from(document.querySelectorAll('form'))
           .find(f => /set_project\.php/.test(f.action || ''));
         const sel = switchForm?.querySelector('select[name="project_id"]');
         const opts = sel ? Array.from(sel.options) : [];
-        // Exact match first (preferred over substring)
-        let hit = opts.find((o) => norm(o.text) === wanted);
-        // Substring fallback
-        if (!hit) hit = opts.find((o) => norm(o.text).includes(wanted));
-        if (hit) {
-          resolvedProjectId = String(hit.value);
-          resolvedProjectName = hit.text.trim();
+        const exact = opts.filter((o) => norm(o.text) === wanted);
+        if (exact.length === 1) {
+          resolvedProjectId = String(exact[0].value);
+          resolvedProjectName = exact[0].text.trim();
         } else {
+          // Ambiguous or none → surface candidates so the caller can
+          // pick project_id explicitly. Includes substring matches
+          // as a hint for "did you mean ...?" UX, but never auto-uses one.
+          const substr = opts.filter((o) => norm(o.text).includes(wanted) && norm(o.text) !== wanted);
           return {
             bugs: [], total: 0,
-            _error: `project_name "${args.project_name}" did not match any project the user can see — try mantis.list_projects to see the available names + ids`,
+            _error: exact.length > 1
+              ? `project_name "${args.project_name}" matches ${exact.length} projects exactly. Pass project_id to disambiguate.`
+              : `project_name "${args.project_name}" did not exactly match any project. Use mantis.list_projects to look up the id, then pass project_id.`,
+            _candidates: {
+              exact: exact.map((o) => ({ id: o.value, name: o.text.trim() })),
+              by_substring: substr.slice(0, 10).map((o) => ({ id: o.value, name: o.text.trim() })),
+            },
           };
         }
       }
