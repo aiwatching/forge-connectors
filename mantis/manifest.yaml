@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.20.0"
+version: "0.21.0"
 author: forge
 category: connector
 mode: browser-side
@@ -1195,46 +1195,53 @@ tools:
             if (STATUS_RE.test(resolution)) status = resolution;
           }
           const fixSchedule = col(cells, 'Fix Schedule');
-          // Per-row filters — all client-side substring on column text.
-          if (fixNeedle && !fixSchedule.toLowerCase().includes(fixNeedle)) continue;
+          // Per-row filters — client-side substring on column text.
+          // Hay-empty = "this install doesn't expose the column here";
+          // trust the server's URL/cookie filter and skip this check.
+          // Falling through with hay='' was the bug — it dropped every
+          // row when the column was missing (custom field / cookie-only
+          // installs like Fortinet Mantis).
+          if (fixNeedle && fixSchedule && !fixSchedule.toLowerCase().includes(fixNeedle)) continue;
 
           // colMatch picks the FIRST header that contains any probe word —
           // survives renames ("Handler" → "Assigned"), sort indicators
           // ("Assigned ↑"), trailing whitespace, etc.
           const assigneeText = colMatch(cells, 'handler', 'assigned', 'assignee')
             .replace(/^\(|\)$/g, '').trim();
-          if (assigneeNeedles.length > 0) {
+          if (assigneeNeedles.length > 0 && assigneeText) {
             const hay = assigneeText.toLowerCase();
             if (!assigneeNeedles.some(n => hay.includes(n))) continue;
           }
 
-          // Source / Keyword — same client-side substring pattern.
-          // Mantis filter pages on customized installs (Fortinet, etc.)
-          // don't expose Source as a filterable widget — it shows up
-          // as a result column instead. Filter here so the user's
-          // `source: "QA"` actually narrows results.
+          // Source / Keyword / Severity — client-side substring tolerant
+          // mode: skip the check when the column is missing/empty (server
+          // filter already did the work). When the column IS present we
+          // still apply the needle so old installs without server-side
+          // widgets keep filtering correctly.
           if (sourceNeedles.length > 0) {
             const hay = colMatch(cells, 'source').toLowerCase();
-            if (!sourceNeedles.some(n => hay.includes(n))) continue;
+            if (hay && !sourceNeedles.some(n => hay.includes(n))) continue;
           }
           if (keywordNeedles.length > 0) {
             const hay = (colMatch(cells, 'keyword', 'keywords', 'category') || '').toLowerCase();
-            if (!keywordNeedles.some(n => hay.includes(n))) continue;
+            if (hay && !keywordNeedles.some(n => hay.includes(n))) continue;
           }
           if (severityNeedles.length > 0) {
             // Severity column may render as "S4 - minor" / "minor"
             // / just "50" — substring match against the user's
             // already-translated needles (numeric strings + text).
             const hay = (colMatch(cells, 'severity', 's') || '').toLowerCase();
-            // Build a permissive set: numeric ids AND their text names.
-            const _all = new Set();
-            for (const n of severityNeedles) {
-              _all.add(n);
-              for (const [name, id] of Object.entries(SEVERITY_IDS)) {
-                if (String(id) === n) _all.add(name);
+            if (hay) {
+              // Build a permissive set: numeric ids AND their text names.
+              const _all = new Set();
+              for (const n of severityNeedles) {
+                _all.add(n);
+                for (const [name, id] of Object.entries(SEVERITY_IDS)) {
+                  if (String(id) === n) _all.add(name);
+                }
               }
+              if (!Array.from(_all).some(n => hay.includes(n))) continue;
             }
-            if (!Array.from(_all).some(n => hay.includes(n))) continue;
           }
 
           const reporterText = colMatch(cells, 'reporter');
