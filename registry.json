@@ -12,6 +12,15 @@
       "min_forge_version": "0.9.17"
     },
     {
+      "id": "fortincm",
+      "name": "FortiNCM Device",
+      "icon": "\ud83c\udf10",
+      "version": "0.1.0",
+      "author": "forge",
+      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 SSH/CLI + REST API (74 tools) for Fortinet's centralised manager of FortiNAC fleets. Mirrors the nac connector: SSH upgrade/get_version/run_command/reboot plus REST coverage of NCM_CLUSTER, FirmwareUpgrade, Host, Group, Backup/Restore, PolicyPackage/PolicyBlock, Scheduler, NetworkDevice, EndpointFingerprint, AdomAdmin. Auth is HTTP-Basic \u2192 JWT, then bare Authorization token on /api/v3/*. Includes call_api escape hatch for the remaining ~990 endpoints.",
+      "min_forge_version": "0.9.17"
+    },
+    {
       "id": "tp",
       "name": "FortiNAC Test Platform",
       "icon": "\ud83e\uddea",
