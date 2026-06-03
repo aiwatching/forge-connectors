@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.23.0"
+version: "0.24.0"
 author: forge
 category: connector
 mode: browser-side
@@ -603,37 +603,73 @@ tools:
       const baseDir = `${location.origin}${location.pathname.replace(/[^/]*$/, '')}`;
 
       // ── Resolve args.project_name → numeric id ────────────────
-      // EXACT match only (case-insensitive, ignoring the "#N " display
-      // prefix Mantis prepends). Substring fallback was removed in v0.23
-      // because installs with "FortiNAC" + "FortiNAC Driver" + ... made
-      // the first-substring-wins logic silently pick the wrong project.
+      // The user gives us a name (e.g. "FortiNAC") and we always
+      // resolve it to the numeric id ourselves — Mantis filters
+      // require the id, not the name. v0.24 adds a localStorage
+      // cache (key __forge_mantis_project_cache_v1, 24h TTL) so the
+      // dropdown only gets walked when the cache is cold or stale.
+      // If the first lookup misses, we force-refresh once before
+      // failing — that catches the "Mantis just got a new project"
+      // case without forcing the user to manually refresh.
       // If args.project_id is set it wins (explicit id always overrides).
       let resolvedProjectId = args.project_id ? String(args.project_id) : '';
       let resolvedProjectName = '';
       if (!resolvedProjectId && args.project_name) {
-        const norm = (s) => String(s).replace(/^\s*#\d+\s+/, '').trim().toLowerCase();
-        const wanted = norm(args.project_name);
-        const switchForm = Array.from(document.querySelectorAll('form'))
-          .find(f => /set_project\.php/.test(f.action || ''));
-        const sel = switchForm?.querySelector('select[name="project_id"]');
-        const opts = sel ? Array.from(sel.options) : [];
-        const exact = opts.filter((o) => norm(o.text) === wanted);
+        const PROJ_CACHE_KEY = '__forge_mantis_project_cache_v1';
+        const PROJ_TTL_MS = 24 * 60 * 60 * 1000;
+        const normName = (s) => String(s).replace(/^\s*#\d+\s+/, '').trim().toLowerCase();
+        const wanted = normName(args.project_name);
+
+        function readCache() {
+          try {
+            const raw = localStorage.getItem(PROJ_CACHE_KEY);
+            if (raw) {
+              const obj = JSON.parse(raw);
+              if (obj && obj.ts && Date.now() - obj.ts < PROJ_TTL_MS && Array.isArray(obj.projects)) {
+                return obj.projects;
+              }
+            }
+          } catch {}
+          return null;
+        }
+        function buildAndCache() {
+          const switchForm = Array.from(document.querySelectorAll('form'))
+            .find(f => /set_project\.php/.test(f.action || ''));
+          const sel = switchForm?.querySelector('select[name="project_id"]');
+          const opts = sel ? Array.from(sel.options) : [];
+          const fresh = opts
+            .map(o => ({ id: Number(o.value), name: (o.text || '').trim() }))
+            .filter(p => p.id > 0);
+          try { localStorage.setItem(PROJ_CACHE_KEY, JSON.stringify({ ts: Date.now(), projects: fresh })); } catch {}
+          return fresh;
+        }
+        function findExact(projects) {
+          return projects.filter(p => normName(p.name) === wanted);
+        }
+
+        let projects = readCache() || buildAndCache();
+        let exact = findExact(projects);
+
+        // First-attempt miss → maybe project was added recently, force
+        // refresh once and try again.
+        if (exact.length === 0) {
+          projects = buildAndCache();
+          exact = findExact(projects);
+        }
+
         if (exact.length === 1) {
-          resolvedProjectId = String(exact[0].value);
-          resolvedProjectName = exact[0].text.trim();
+          resolvedProjectId = String(exact[0].id);
+          resolvedProjectName = exact[0].name;
         } else {
-          // Ambiguous or none → surface candidates so the caller can
-          // pick project_id explicitly. Includes substring matches
-          // as a hint for "did you mean ...?" UX, but never auto-uses one.
-          const substr = opts.filter((o) => norm(o.text).includes(wanted) && norm(o.text) !== wanted);
+          const substr = projects.filter(p => normName(p.name).includes(wanted) && normName(p.name) !== wanted);
           return {
             bugs: [], total: 0,
             _error: exact.length > 1
               ? `project_name "${args.project_name}" matches ${exact.length} projects exactly. Pass project_id to disambiguate.`
-              : `project_name "${args.project_name}" did not exactly match any project. Use mantis.list_projects to look up the id, then pass project_id.`,
+              : `project_name "${args.project_name}" did not exactly match any project (cache refreshed). Use list_projects to see the list, then either rename your input or pass project_id.`,
             _candidates: {
-              exact: exact.map((o) => ({ id: o.value, name: o.text.trim() })),
-              by_substring: substr.slice(0, 10).map((o) => ({ id: o.value, name: o.text.trim() })),
+              exact: exact.map(p => ({ id: p.id, name: p.name })),
+              by_substring: substr.slice(0, 10).map(p => ({ id: p.id, name: p.name })),
             },
           };
         }
@@ -1260,13 +1296,43 @@ tools:
 
   list_projects:
     description: |
-      List projects the current user can see. Pulled from the project_id
-      <select> on the bug list page — manage_proj_page.php is admin-only.
-    returns: "{ projects: [...], total }"
+      List projects the current user can see. Returns a cached snapshot
+      (24-hour TTL) of every (id, name) the project switcher shows;
+      pass refresh=true to bypass the cache. Cache lives in localStorage
+      under `__forge_mantis_project_cache_v1` (per-Mantis-origin).
+
+      Used internally by search_bugs to resolve project_name → id without
+      asking the user for the numeric id every time.
+    parameters:
+      refresh:
+        type: boolean
+        label: Force refresh
+        description: "If true, ignore the local cache and re-pull the list from the project switcher."
+        required: false
+    returns: "{ projects: [{id, name, depth}], total, from_cache, ttl_remaining_sec }"
     page:
       url: "{base_url}/view_all_bug_page.php"
       on_target: "/view_all_bug_page.php"
     script: |
+      const STORAGE_KEY = '__forge_mantis_project_cache_v1';
+      const TTL_MS = 24 * 60 * 60 * 1000;
+      const force = !!args.refresh;
+      if (!force) {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const obj = JSON.parse(raw);
+            if (obj && obj.ts && Date.now() - obj.ts < TTL_MS && Array.isArray(obj.projects)) {
+              return {
+                projects: obj.projects,
+                total: obj.projects.length,
+                from_cache: true,
+                ttl_remaining_sec: Math.floor((TTL_MS - (Date.now() - obj.ts)) / 1000),
+              };
+            }
+          }
+        } catch {}
+      }
       const sel = document.querySelector('select[name="project_id"]');
       if (!sel) return { _error: 'project_id select not found on page' };
       const projects = Array.from(sel.options)
@@ -1276,7 +1342,13 @@ tools:
           depth: ((o.text || '').match(/^[\s ]+/)?.[0]?.length) || 0,
         }))
         .filter(p => p.id > 0);
-      return { projects, total: projects.length };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ts: Date.now(), projects }));
+      } catch {}
+      return {
+        projects, total: projects.length, from_cache: false,
+        ttl_remaining_sec: Math.floor(TTL_MS / 1000),
+      };
 
   list_attachments:
     description: |
