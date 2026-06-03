@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.0"
+version: "0.25.1"
 author: forge
 category: connector
 mode: browser-side
@@ -1433,22 +1433,52 @@ tools:
       if (!form) return { _error: 'filter form not found on view_all_bug_page.php — are you logged in?' };
 
       const enums = {};
-      const markers = Array.from(form.querySelectorAll('input[name^="show_"]'));
-      for (const m of markers) {
-        const markerName = m.getAttribute('name') || '';
-        const logicalKey = markerName.replace(/^show_/, '');
-        if (!logicalKey) continue;
-        // Walk forward in DOM order until we hit the next SELECT.
-        let el = m.nextElementSibling;
-        while (el && el.tagName !== 'SELECT') el = el.nextElementSibling;
-        if (!el) continue;
-        const selectName = el.getAttribute('name') || '';
-        const options = Array.from(el.options || [])
-          .map(o => ({ value: String(o.value || '').trim(), label: String(o.text || '').trim() }))
-          .filter(o => o.value && o.value !== '0' && o.label);
-        if (options.length === 0) continue;
-        enums[logicalKey] = { marker: markerName, param: selectName, options };
-      }
+      // DOM-order pairing: Mantis renders <input name="show_X"> as a
+      // marker, then later (often in a different <td>/<tr>, NOT a
+      // sibling) renders a <select name="multicheckbox[]">. The first
+      // multicheckbox[] AFTER each marker belongs to that marker.
+      // nextElementSibling failed on keyword/category/source because
+      // they cross table-cell boundaries. Use a flat DOM-order list.
+      const flow = Array.from(form.querySelectorAll(
+        'input[name^="show_"], select[name^="show_"], select[name="multicheckbox[]"], select[name^="multicheckbox_"]'
+      ));
+      const consumedSelects = new Set();
+      flow.forEach((el, idx) => {
+        if (el.tagName === 'INPUT' && el.getAttribute('name')?.startsWith('show_')) {
+          const markerName = el.getAttribute('name') || '';
+          const logicalKey = markerName.replace(/^show_/, '');
+          if (!logicalKey) return;
+          // Find the first SELECT AFTER this marker that hasn't been
+          // claimed by an earlier marker.
+          for (let j = idx + 1; j < flow.length; j++) {
+            const cand = flow[j];
+            if (cand.tagName !== 'SELECT') continue;
+            if (consumedSelects.has(j)) continue;
+            const selectName = cand.getAttribute('name') || '';
+            // Skip if it's another show_X marker rendered as SELECT —
+            // that's a standalone filter, paired with itself below.
+            if (selectName.startsWith('show_')) break;
+            const options = Array.from(cand.options || [])
+              .map(o => ({ value: String(o.value || '').trim(), label: String(o.text || '').trim() }))
+              .filter(o => o.value && o.value !== '0' && o.label);
+            if (options.length === 0) { consumedSelects.add(j); continue; }
+            enums[logicalKey] = { marker: markerName, param: selectName, options };
+            consumedSelects.add(j);
+            break;
+          }
+        } else if (el.tagName === 'SELECT' && el.getAttribute('name')?.startsWith('show_')) {
+          // Standalone show_X SELECT (no INPUT marker) — the SELECT
+          // itself is the filter. Used by some installs for category.
+          const selectName = el.getAttribute('name') || '';
+          const logicalKey = selectName.replace(/^show_/, '');
+          if (!logicalKey) return;
+          const options = Array.from(el.options || [])
+            .map(o => ({ value: String(o.value || '').trim(), label: String(o.text || '').trim() }))
+            .filter(o => o.value && o.value !== '0' && o.label);
+          if (options.length === 0) return;
+          enums[logicalKey] = { marker: null, param: selectName, options };
+        }
+      });
 
       // Also probe stand-alone SELECTs with well-known names that don't
       // use a marker pattern (some installs render Status / Resolution
