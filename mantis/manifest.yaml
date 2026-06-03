@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.1"
+version: "0.25.2"
 author: forge
 category: connector
 mode: browser-side
@@ -587,6 +587,64 @@ tools:
       const reporterId = resolveUserId(args.reporter);
       const qaAssigneeId = resolveUserId(args.qa_assignee);
 
+      // ── Enum cache pre-pass ──────────────────────────────────────
+      // If refresh_enum_cache has been run we have a snapshot of every
+      // install-specific multicheckbox enum (Keyword, Source, Severity,
+      // Category, Status, Resolution) — including each option's
+      // (value=id, label=human name) pair AND the form param that
+      // Mantis uses to submit it. Translate string-named args
+      // ("QA Automation Test", "open,reopened") into the numeric ids
+      // the server actually accepts, BEFORE we hit applyMultiValueFilter
+      // and the form-POST. The whole point of the cache.
+      //
+      // Falls back to the previous label-based matching if the cache
+      // is missing or stale.
+      let _enumCache = null;
+      try {
+        const _raw = localStorage.getItem('__forge_mantis_enum_cache_v1');
+        if (_raw) {
+          const _obj = JSON.parse(_raw);
+          if (_obj && _obj.ts && (Date.now() - _obj.ts) < 24 * 60 * 60 * 1000 && _obj.enums) {
+            _enumCache = _obj.enums;
+          }
+        }
+      } catch {}
+      function _enumLookupIds(logicalKey, rawValue) {
+        if (!_enumCache || !rawValue) return null;
+        const e = _enumCache[logicalKey];
+        if (!e || !Array.isArray(e.options) || e.options.length === 0) return null;
+        const items = String(rawValue).split(',').map(s => s.trim()).filter(Boolean);
+        const ids = [];
+        for (const item of items) {
+          const lc = item.toLowerCase();
+          // value exact (already an id) > label exact > label substring
+          let hit = e.options.find(o => String(o.value).toLowerCase() === lc);
+          if (!hit) hit = e.options.find(o => o.label.toLowerCase() === lc);
+          if (!hit) hit = e.options.find(o => o.label.toLowerCase().includes(lc));
+          if (hit) ids.push(String(hit.value));
+        }
+        return ids.length > 0 ? ids : null;
+      }
+      // Note: connector arg keys → enum cache logical keys.
+      // Keyword field is named "key" on Mantis filter form.
+      const _enumArgMap = {
+        keyword: 'key',
+        source: 'source',
+        category: 'category',
+        severity: 'severity',
+        status: 'status',
+        resolution: 'resolution',
+      };
+      const _enumApplied = {};
+      for (const [argKey, logicalKey] of Object.entries(_enumArgMap)) {
+        if (!args[argKey]) continue;
+        const ids = _enumLookupIds(logicalKey, args[argKey]);
+        if (ids && ids.length > 0) {
+          _enumApplied[argKey] = { original: args[argKey], resolved_ids: ids, via_enum_cache: true };
+          args[argKey] = ids.join(',');
+        }
+      }
+
       // Fix Schedule → server-side URL param (search_fixforecast).
       const fixForecast = String(args.fix_schedule || '').trim();
 
@@ -1138,6 +1196,8 @@ tools:
       }
       _filterDiag._form_applied = _formApplied;
       _filterDiag._applied_via = appliedVia;
+      _filterDiag._enum_applied = _enumApplied;
+      _filterDiag._enum_cache_available = !!_enumCache;
 
       const r = usedFormPost
         ? { ok: true }  // form POST already applied filter
