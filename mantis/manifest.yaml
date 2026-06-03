@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.24.2"
+version: "0.25.0"
 author: forge
 category: connector
 mode: browser-side
@@ -1366,6 +1366,118 @@ tools:
       } catch {}
       return {
         projects, total: projects.length, from_cache: false,
+        ttl_remaining_sec: Math.floor(TTL_MS / 1000),
+      };
+
+  refresh_enum_cache:
+    description: |
+      Probe the Mantis filter form and snapshot the full (name → id +
+      form-param) map of every multicheckbox-style enum field on this
+      install (Keyword, Source, Category, Severity, Status, Resolution,
+      anything else with a `show_<X>` marker + adjacent <select>).
+
+      Snapshot is cached in localStorage (key __forge_mantis_enum_cache_v1,
+      24h TTL) — search_bugs reads it to translate human-readable
+      string filter values ("QA Automation Test", "open,reopened") into
+      the numeric ids Mantis actually accepts on its filter URL.
+
+      Call this when Mantis adds / renames a Keyword or other enum
+      option; otherwise the cache renews itself every 24h.
+    parameters:
+      refresh:
+        type: boolean
+        label: Force refresh
+        description: "Ignore the cached snapshot and re-probe the form."
+        required: false
+    returns: "{ enums: { <logicalKey>: { marker, param, options: [{value,label}] } }, total_enums, total_options, from_cache, ttl_remaining_sec }"
+    page:
+      url: "{base_url}/view_all_bug_page.php"
+      on_target: "/view_all_bug_page.php"
+    script: |
+      const STORAGE_KEY = '__forge_mantis_enum_cache_v1';
+      const TTL_MS = 24 * 60 * 60 * 1000;
+      const force = !!args.refresh;
+
+      if (!force) {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const obj = JSON.parse(raw);
+            if (obj && obj.ts && Date.now() - obj.ts < TTL_MS && obj.enums) {
+              const totalOpts = Object.values(obj.enums)
+                .reduce((s, e) => s + (e.options?.length || 0), 0);
+              return {
+                enums: obj.enums,
+                total_enums: Object.keys(obj.enums).length,
+                total_options: totalOpts,
+                from_cache: true,
+                ttl_remaining_sec: Math.floor((TTL_MS - (Date.now() - obj.ts)) / 1000),
+              };
+            }
+          }
+        } catch {}
+      }
+
+      // Probe the filter form. Mantis renders each enum filter as:
+      //   <input type="hidden" name="show_<logicalKey>" ... />   ← marker
+      //   <select name="<actualParam>" ...>                        ← the field
+      //     <option value="<id>">Human label</option>
+      //     ...
+      // The marker's `name` (e.g. show_key / show_source) tells us
+      // which logical filter this is; the *next* SELECT in DOM order
+      // is the actual multicheckbox. We harvest (value, label) pairs
+      // and remember the select's `name=` so callers know which URL
+      // param to fill in.
+      const form = document.querySelector('form#filter_form, form[action*="view_all_set"], form[action*="view_all"]')
+        || document.forms[0];
+      if (!form) return { _error: 'filter form not found on view_all_bug_page.php — are you logged in?' };
+
+      const enums = {};
+      const markers = Array.from(form.querySelectorAll('input[name^="show_"]'));
+      for (const m of markers) {
+        const markerName = m.getAttribute('name') || '';
+        const logicalKey = markerName.replace(/^show_/, '');
+        if (!logicalKey) continue;
+        // Walk forward in DOM order until we hit the next SELECT.
+        let el = m.nextElementSibling;
+        while (el && el.tagName !== 'SELECT') el = el.nextElementSibling;
+        if (!el) continue;
+        const selectName = el.getAttribute('name') || '';
+        const options = Array.from(el.options || [])
+          .map(o => ({ value: String(o.value || '').trim(), label: String(o.text || '').trim() }))
+          .filter(o => o.value && o.value !== '0' && o.label);
+        if (options.length === 0) continue;
+        enums[logicalKey] = { marker: markerName, param: selectName, options };
+      }
+
+      // Also probe stand-alone SELECTs with well-known names that don't
+      // use a marker pattern (some installs render Status / Resolution
+      // this way). Only include if we haven't already covered them via
+      // the marker walk above.
+      for (const known of ['reportsource', 'resolution']) {
+        if (enums[known]) continue;
+        const sel = form.querySelector(`select[name="${known}"], select[name="${known}[]"]`);
+        if (!sel) continue;
+        const options = Array.from(sel.options || [])
+          .map(o => ({ value: String(o.value || '').trim(), label: String(o.text || '').trim() }))
+          .filter(o => o.value && o.value !== '0' && o.label);
+        if (options.length > 0) {
+          enums[known] = { marker: null, param: sel.getAttribute('name') || known, options };
+        }
+      }
+
+      if (Object.keys(enums).length === 0) {
+        return { _error: 'no enum fields detected in the filter form — Mantis page layout may have changed' };
+      }
+
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ts: Date.now(), enums })); } catch {}
+
+      const totalOpts = Object.values(enums).reduce((s, e) => s + e.options.length, 0);
+      return {
+        enums,
+        total_enums: Object.keys(enums).length,
+        total_options: totalOpts,
+        from_cache: false,
         ttl_remaining_sec: Math.floor(TTL_MS / 1000),
       };
 

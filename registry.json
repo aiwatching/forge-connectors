@@ -42,7 +42,7 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.24.2",
+      "version": "0.25.0",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes.",
       "min_forge_version": "0.8.0"
