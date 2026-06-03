@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.2"
+version: "0.12.3"
 author: forge
 category: connector
 mode: server-side
@@ -600,6 +600,12 @@ tools:
         filters=role==NAC-Default
       Combine with `&` only for two separate filter clauses — NOT
       with a logical AND. Use list with a tight filter, not a full scan.
+
+      ⚠️ Some NAC builds 500 "System error" on full host scans (large
+      data set causes server-side error). If you see that, narrow the
+      query: use a tight filter, smaller count (e.g. 10), or switch
+      sort_key to "id" instead of "physAddress" — the response body's
+      `total` field is still populated and tells you the real count.
     protocol: http
     parameters:
       host:        { type: string, required: true }
@@ -759,6 +765,11 @@ tools:
         path: "system/local-properties/cluster"
         path: "device/port/12345"
         path: "user/admin-profile"
+
+      ⚠️ DO NOT put '?' or any query string in `path` — it produces a
+      malformed URL with two '?' marks. Put query args in `extra_query`:
+        ✗ path: "host?start=0&count=10"
+        ✓ path: "host", extra_query: "start=0&count=10"
 
       The standard query params (resetUserTimeout, APIDEBUG, NAC_SERVER)
       are auto-added. Add tool-specific args in `extra_query`.
