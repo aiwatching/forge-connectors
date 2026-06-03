@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.2"
+version: "0.25.3"
 author: forge
 category: connector
 mode: browser-side
@@ -648,6 +648,25 @@ tools:
       // Fix Schedule → server-side URL param (search_fixforecast).
       const fixForecast = String(args.fix_schedule || '').trim();
 
+      // ── Client-side sanity needles ───────────────────────────────
+      // Belt-and-suspenders for installs where form-POST applies
+      // keyword cleanly but Mantis drops co-submitted URL-only
+      // filters (fix_schedule / status / resolution). We re-check
+      // these THREE stable list columns AFTER the server returns,
+      // using the user's ORIGINAL human-readable values (not the
+      // id strings the enum cache rewrote into args.*). Keyword is
+      // deliberately NOT in this list — its list column is
+      // unreliable on Fortinet's custom theme. Columns that come
+      // back empty get a free pass (column hidden → trust server).
+      const _origStatus = _enumApplied.status?.original ?? args.status ?? '';
+      const _origResolution = _enumApplied.resolution?.original ?? args.resolution ?? '';
+      const _toNeedles = (raw) => String(raw || '')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      const _statusNeedles = _toNeedles(_origStatus);
+      const _resolutionNeedles = _toNeedles(_origResolution);
+      const _fixNeedles = fixForecast ? [fixForecast.toLowerCase()] : [];
+      let _droppedBySanity = 0;
+
       // Server-side filters trust completely — no client-side row
       // verification anymore. Page budget defaults to 2 pages × 100 rows.
       // Source / Keyword / Severity needles are still populated below
@@ -1288,14 +1307,27 @@ tools:
             if (STATUS_RE.test(resolution)) status = resolution;
           }
           const fixSchedule = col(cells, 'Fix Schedule');
-          // ─── No client-side row filtering ───
-          // Mantis applies every filter server-side via URL params + the
-          // MANTIS_VIEW_ALL_COOKIE1 view state. We used to re-check each
-          // needle against the row's column text as a fallback for installs
-          // whose filter form didn't expose a widget — but on installs where
-          // those fields are custom (Fortinet et al.), the row HTML doesn't
-          // render them either, so the fallback silently dropped every
-          // match. Server's count is authoritative; just collect metadata.
+          const resolutionCell = col(cells, 'Resolution');
+          // ─── Client-side sanity check (stable list columns only) ───
+          // Mantis sometimes accepts the form-POST keyword filter but
+          // silently drops the URL-only fix_schedule / show_status /
+          // resolution[] co-params (POST replaces the view-state, URL
+          // params from the same request get ignored). Verify HERE
+          // against the row's own column text — but ONLY if the column
+          // is non-empty. Empty column → trust server (Fortinet's theme
+          // hides several fields from list view, so absence ≠ mismatch).
+          const _matchNeedles = (hay, needles) => {
+            if (!needles.length) return true;
+            const h = String(hay || '').trim().toLowerCase();
+            if (!h) return true;
+            return needles.some(n => h === n || h.includes(n));
+          };
+          if (!_matchNeedles(fixSchedule, _fixNeedles)
+            || !_matchNeedles(status, _statusNeedles)
+            || !_matchNeedles(resolutionCell, _resolutionNeedles)) {
+            _droppedBySanity++;
+            continue;
+          }
           const assigneeText = colMatch(cells, 'handler', 'assigned', 'assignee')
             .replace(/^\(|\)$/g, '').trim();
           const reporterText = colMatch(cells, 'reporter');
@@ -1371,6 +1403,13 @@ tools:
         _applied_via: appliedVia,
         _filter_url: filterUrl,
         _page: lastUrl,
+        // Number of rows the server returned that failed local
+        // sanity check (fix_schedule / status / resolution column
+        // didn't match the user's request). High value here = the
+        // server-side filter for that arg silently failed; total
+        // is still bounded by `limit` so the caller still gets up
+        // to N true matches.
+        _dropped_by_sanity: _droppedBySanity,
       };
 
   list_projects:
