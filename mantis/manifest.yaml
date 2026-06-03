@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.24.1"
+version: "0.24.2"
 author: forge
 category: connector
 mode: browser-side
@@ -919,11 +919,22 @@ tools:
 
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
-      const extra = args.extra_params || {};
-      for (const [k, v] of Object.entries(extra)) {
-        if (v == null || v === '') continue;
-        if (Array.isArray(v)) { params.delete(k); v.forEach((x) => params.append(k, String(x))); }
-        else params.set(k, String(v));
+      // Tolerant: accept either a plain object OR a JSON-encoded string
+      // (LLM callers often JSON.stringify nested args before passing).
+      // Without this, Object.entries(string) iterates the string's
+      // character map (0='{', 1='"', 2='m', ...) and shoves nonsense
+      // into the URL — exactly what one chat run produced before.
+      let extra = args.extra_params || {};
+      if (typeof extra === 'string') {
+        try { extra = JSON.parse(extra); }
+        catch { extra = {}; }
+      }
+      if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+        for (const [k, v] of Object.entries(extra)) {
+          if (v == null || v === '') continue;
+          if (Array.isArray(v)) { params.delete(k); v.forEach((x) => params.append(k, String(x))); }
+          else params.set(k, String(v));
+        }
       }
       const filterUrl = baseDir + 'view_all_set.php?' + params.toString();
       let appliedVia = 'url-query';
