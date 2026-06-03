@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.4"
+version: "0.25.5"
 author: forge
 category: connector
 mode: browser-side
@@ -1152,64 +1152,134 @@ tools:
         return null;
       }
 
-      // Pre-select options on the form for filters that need server-side handling.
+      // ── Form-POST filter path — v0.25.5 (probed live via CDP) ────
+      // Mantis stores filter state in the user's session (cookie
+      // MANTIS_VIEW_ALL_COOKIE1). URL params on view_all_bug_page.php
+      // are SILENTLY IGNORED. The only way to apply a filter is to
+      // POST the FULL filter form to view_all_set.php, preserving
+      // every field's DOM order — Mantis pairs each `multicheckbox[]`
+      // entry to the preceding `show_X` hidden marker by position.
+      //
+      // Form layout (mantis.fortinet.com, verified 2026-06-03):
+      //   show_severity     → SELECT#multi_severity   (multicheckbox[])
+      //   show_status       → SELECT#multi_status     (multicheckbox[])
+      //   show_key          → SELECT#multi_keyword    (multicheckbox[])
+      //   priority          → SELECT#multi_priority   (multicheckbox[])
+      //   reportsource      → SELECT#multi_source     (multicheckbox[])
+      //   resolution        → SELECT#multi_resolution (multicheckbox[])
+      //   show_tag          → SELECT#multi_tag        (multicheckbox_tags[])
+      //   search_fixforecast → text input (Fix Schedule string)
+      //
+      // Key gotchas that broke earlier versions:
+      //   • POST URL must be `form.action` (?f=3) — NOT ?f=0. f=0 is
+      //     anonymous, doesn't persist; Mantis serves a redirect to
+      //     view_all_bug_page.php which reads cookie state instead of
+      //     applying our submission.
+      //   • Pre-existing form state (user's saved filter) carries OLD
+      //     selections — we MUST reset all relevant multi-selects AND
+      //     marker hidden inputs before applying ours, otherwise the
+      //     saved state ANDs into our new filter and returns 0 rows.
+      //   • `filter=Apply` must be appended (submit button isn't in
+      //     FormData), tells Mantis "apply" vs "save as new".
       let usedFormPost = false;
-      const form = document.querySelector('form#filter_form, form[action*="view_all_set"], form[action*="view_all"]')
-        || document.forms[0];
       const _formApplied = {};
-      // Apply each requested multicheckbox filter uniformly. Each
-      // entry maps a top-level arg → logical filter key (used to look
-      // up the select via filterFormMap) + the parsed needles. Adding
-      // a new filter is one row.
-      const multicheckboxFilters = [
-        { argKey: 'source',     logicalKey: 'source',   needles: sourceNeedles },
-        { argKey: 'keyword',    logicalKey: 'keyword',  needles: keywordNeedles },
-        { argKey: 'severity',   logicalKey: 'severity', needles: severityNeedles },
-      ];
-      const anyMulti = multicheckboxFilters.some(f => f.needles.length > 0);
-      if (form && anyMulti) {
-        for (const f of multicheckboxFilters) {
-          if (f.needles.length === 0) continue;
-          const found = getFilterSelect(f.logicalKey);
-          if (found) {
-            if (found.el.tagName === 'INPUT') {
-              // Text inputs (e.g. keywords on installs that render it
-              // as a plain text field).
-              found.el.value = f.needles.join(',');
-              _formApplied[f.argKey] = { mapped_via: found.src, marker_name: found.el.getAttribute('name'), as: 'text-input' };
-            } else {
-              const n = selectOptions(found.el, f.needles);
-              _formApplied[f.argKey] = { matched_options: n, mapped_via: found.src, select_id: found.el.id, marker_name: found.el.getAttribute('name') };
-            }
-          } else {
-            _formApplied[f.argKey] = { matched_options: 0, mapped_via: null, error: `no filter select found for "${f.logicalKey}" — Mantis filter form may not expose it; will fall back to client-side` };
-          }
+
+      // Fetch the live filter form. The script runs in the user's
+      // already-logged-in Mantis tab; if it's not currently on
+      // view_all_bug_page.php we GET that URL and parse the form via
+      // DOMParser. fetch() inherits session cookies.
+      let form = document.getElementById('filters');
+      let formSource = 'live';
+      if (!form) {
+        try {
+          const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced',
+            { credentials: 'include' });
+          const html = await fr.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          form = doc.getElementById('filters');
+          formSource = 'fetched';
+        } catch (e) {
+          _formApplied._fetch_error = e.message;
         }
-        // Submit the form. Two non-obvious requirements (probed live
-        // via chrome-mcp on mantis.fortinet.com — verified server-
-        // side total dropped 914 → 139 once both were correct):
-        //   1. Target `view_all_set.php?f=0` ("f=0" = TEMPORARY filter
-        //      slot per Mantis API). The form's default action is
-        //      `?f=3&view_type=0` — that saves into a NAMED filter,
-        //      not what we want. Override.
-        //   2. Include `filter=Apply` in body. Submit buttons aren't
-        //      auto-included in FormData, but Mantis's backend
-        //      branches on this key to decide "apply filter" vs
-        //      "save as new" etc. Without it Mantis ignores the POST.
+      }
+      _formApplied._form_source = formSource;
+
+      // Single-source-of-truth table — connector arg → (hidden marker,
+      // SELECT id, expected SELECT name). Adding a new filterable field
+      // is one row.
+      const FILTER_MAP = [
+        { argKey: 'status',     marker: 'show_status',   selectId: 'multi_status',     ids: statusIds.map(String) },
+        { argKey: 'severity',   marker: 'show_severity', selectId: 'multi_severity',   ids: severityNeedles.map(String) },
+        { argKey: 'keyword',    marker: 'show_key',      selectId: 'multi_keyword',    ids: keywordNeedles.map(String) },
+        { argKey: 'source',     marker: 'reportsource',  selectId: 'multi_source',     ids: sourceNeedles.map(String) },
+        { argKey: 'resolution', marker: 'resolution',    selectId: 'multi_resolution', ids: _resolutionIds.map(String) },
+      ];
+
+      const anyFilter = FILTER_MAP.some(f => f.ids.length > 0) || !!fixForecast;
+      if (form && anyFilter) {
+        // ── Reset old filter state (CRITICAL) ──
+        // Any multicheckbox[] / multicheckbox_tags[] selection AND
+        // marker value from the user's previously-saved filter would
+        // get ANDed with our submission, returning 0 rows.
+        for (const sel of form.querySelectorAll('select[name="multicheckbox[]"], select[name="multicheckbox_tags[]"]')) {
+          for (const opt of sel.options) opt.selected = false;
+        }
+        const MARKERS_TO_CLEAR = [
+          'show_status', 'show_severity', 'show_key', 'show_tag',
+          'priority', 'reportsource', 'resolution',
+        ];
+        for (const name of MARKERS_TO_CLEAR) {
+          const el = form.querySelector(`input[name="${name}"]`);
+          if (el) el.value = '';
+        }
+        const fixInp = form.querySelector('input[name="search_fixforecast"]');
+        if (fixInp) fixInp.value = '';
+
+        // ── Apply each user-requested filter ──
+        for (const f of FILTER_MAP) {
+          if (f.ids.length === 0) continue;
+          const marker = form.querySelector(`input[name="${f.marker}"]`);
+          const sel = form.querySelector('#' + f.selectId);
+          if (marker) marker.value = f.ids.join(',');
+          let matched = 0;
+          if (sel) {
+            const want = new Set(f.ids);
+            for (const opt of sel.options) {
+              opt.selected = want.has(String(opt.value));
+              if (opt.selected) matched++;
+            }
+          }
+          _formApplied[f.argKey] = {
+            marker: f.marker, select_id: f.selectId,
+            requested_ids: f.ids, matched_options: matched,
+            select_found: !!sel, marker_found: !!marker,
+          };
+        }
+        if (fixForecast && fixInp) {
+          fixInp.value = fixForecast;
+          _formApplied.fix_schedule = { applied: fixForecast, field: 'search_fixforecast' };
+        }
+
+        // ── Serialize + POST ──
+        // URLSearchParams preserves duplicate multicheckbox[] keys in
+        // DOM order. FormData with File entries would matter for
+        // multipart, but this form has none — urlencoded is correct.
         try {
           const fd = new FormData(form);
-          fd.set('filter', 'Apply');
-          // Make sure our URL params also win — overlay them.
-          for (const [k, v] of params.entries()) {
-            if (!fd.has(k) || fd.get(k) === '') fd.set(k, v);
-          }
-          const action = baseDir + 'view_all_set.php?f=0';
+          const body = new URLSearchParams();
+          for (const [k, v] of fd.entries()) body.append(k, typeof v === 'string' ? v : '');
+          body.append('filter', 'Apply');
+          // Use form.action verbatim (?f=3). The connector spent v0.14
+          // → v0.17 swapping action URLs; f=3 is what actually works.
+          const action = form.action || (baseDir + 'view_all_set.php?f=3&view_type=0');
           const resp = await fetch(action, {
             method: 'POST',
-            body: fd,
+            body: body.toString(),
             credentials: 'include',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             redirect: 'follow',
           });
+          _formApplied._post_action = action;
           _formApplied._post_status = resp.status;
           _formApplied._post_final_url = resp.url;
           if (resp.ok) {
@@ -1219,6 +1289,8 @@ tools:
         } catch (e) {
           _formApplied._post_error = e.message;
         }
+      } else if (anyFilter) {
+        _formApplied._error = 'form not found — falling back to URL-param path';
       }
       _filterDiag._form_applied = _formApplied;
       _filterDiag._applied_via = appliedVia;

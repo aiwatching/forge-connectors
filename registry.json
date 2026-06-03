@@ -42,9 +42,9 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.25.4",
+      "version": "0.25.5",
       "author": "forge",
-      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.4: adaptive page budget — when sanity check filters most server rows, walk up to 20 pages (computed from serverTotal / actual per-page count) instead of stopping at page 1 just because Mantis served 50 rows when we asked for 100.",
+      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.5: root-cause fix for filter accuracy — POST to form.action (?f=3, not ?f=0), reset all prior multicheckbox/show_X markers before applying, status/severity/keyword/source/resolution unified through one FILTER_MAP, fix_schedule set via form's search_fixforecast text input (not URL param). Verified live: keyword + status + resolution + fix_schedule → exact 3-bug result; without keyword → 39.",
       "min_forge_version": "0.8.0"
     },
     {
