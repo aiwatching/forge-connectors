@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.21.0"
+version: "0.22.0"
 author: forge
 category: connector
 mode: browser-side
@@ -579,34 +579,17 @@ tools:
       const reporterId = resolveUserId(args.reporter);
       const qaAssigneeId = resolveUserId(args.qa_assignee);
 
-      // Fix Schedule is now a server-side URL param (search_fixforecast),
-      // not client-side substring. The client-side path is still kept as
-      // a safety net only for the rare case the server-side param fails.
+      // Fix Schedule → server-side URL param (search_fixforecast).
       const fixForecast = String(args.fix_schedule || '').trim();
-      const fixNeedle = fixForecast.toLowerCase();
 
-      // Multi-value client-side fallbacks for assignee/reporter/qa when user
-      // lookup didn't resolve to an id. The unresolved input becomes the
-      // substring needle.
-      const splitNeedles = (raw) => String(raw || '')
-        .toLowerCase()
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean);
-      const assigneeNeedles = handlerId    ? [] : splitNeedles(args.assignee);
-      const reporterNeedles = reporterId   ? [] : splitNeedles(args.reporter);
-      const qaNeedles       = qaAssigneeId ? [] : splitNeedles(args.qa_assignee);
-      // NOTE: `sourceNeedles` / `keywordNeedles` are populated later
-      // by applyMultiValueFilter. Recompute the client-filter flag
-      // there so PAGE_SIZE / MAX_PAGES reflect ALL active filters.
-      let hasClientFilter = assigneeNeedles.length > 0
-        || reporterNeedles.length > 0
-        || qaNeedles.length > 0;
-      // Client fallback active → scan more pages. Recalculated after
-      // applyMultiValueFilter runs (which may add source/keyword
-      // needles).
-      let PAGE_SIZE = hasClientFilter ? 200 : 100;
-      let MAX_PAGES = hasClientFilter ? 10 : 2;
+      // Server-side filters trust completely — no client-side row
+      // verification anymore. Page budget defaults to 2 pages × 100 rows.
+      // Source / Keyword / Severity needles are still populated below
+      // (by applyMultiValueFilter), but only for the form-POST path
+      // which feeds them into the Mantis filter form — NOT for row
+      // verification.
+      let PAGE_SIZE = 100;
+      let MAX_PAGES = 2;
 
       // ─── Build & submit filter via the page's REAL form ──────────────
       // Some customized Mantis installs ignore URL params like \`status_id[]\`
@@ -882,18 +865,9 @@ tools:
       const _severityTranslated = translateEnumValue(SEVERITY_IDS, args.severity);
       const severityNeedles = applyMultiValueFilter(_severityTranslated, 'severity', 'severity') || [];
 
-      // Refresh scan budget — these filters might catch rows the
-      // server didn't filter for us.
-      // Bumped to 30 pages (×200 = 6000 rows) because form-POST
-      // server-side path is unreliable from extension runner context
-      // (works in dev console / chrome-mcp, but returns unfiltered
-      // set when called via the bridge — different fetch context).
-      // Client-side scan over 6000 rows always works, just slower.
-      if (keywordNeedles.length || sourceNeedles.length || severityNeedles.length) {
-        hasClientFilter = true;
-        PAGE_SIZE = 200;
-        MAX_PAGES = 30;
-      }
+      // Page budget stays at defaults — server filters every field, so
+      // we no longer need the 6000-row scan window that the (removed)
+      // client-side fallback required.
 
       // extra_params override — set last so callers can patch anything
       // the above didn't cover (custom_field_X, sort=, dir=, etc.).
@@ -1195,71 +1169,18 @@ tools:
             if (STATUS_RE.test(resolution)) status = resolution;
           }
           const fixSchedule = col(cells, 'Fix Schedule');
-          // Per-row filters — client-side substring on column text.
-          // Hay-empty = "this install doesn't expose the column here";
-          // trust the server's URL/cookie filter and skip this check.
-          // Falling through with hay='' was the bug — it dropped every
-          // row when the column was missing (custom field / cookie-only
-          // installs like Fortinet Mantis).
-          if (fixNeedle && fixSchedule && !fixSchedule.toLowerCase().includes(fixNeedle)) continue;
-
-          // colMatch picks the FIRST header that contains any probe word —
-          // survives renames ("Handler" → "Assigned"), sort indicators
-          // ("Assigned ↑"), trailing whitespace, etc.
+          // ─── No client-side row filtering ───
+          // Mantis applies every filter server-side via URL params + the
+          // MANTIS_VIEW_ALL_COOKIE1 view state. We used to re-check each
+          // needle against the row's column text as a fallback for installs
+          // whose filter form didn't expose a widget — but on installs where
+          // those fields are custom (Fortinet et al.), the row HTML doesn't
+          // render them either, so the fallback silently dropped every
+          // match. Server's count is authoritative; just collect metadata.
           const assigneeText = colMatch(cells, 'handler', 'assigned', 'assignee')
             .replace(/^\(|\)$/g, '').trim();
-          if (assigneeNeedles.length > 0 && assigneeText) {
-            const hay = assigneeText.toLowerCase();
-            if (!assigneeNeedles.some(n => hay.includes(n))) continue;
-          }
-
-          // Source / Keyword / Severity — client-side substring tolerant
-          // mode: skip the check when the column is missing/empty (server
-          // filter already did the work). When the column IS present we
-          // still apply the needle so old installs without server-side
-          // widgets keep filtering correctly.
-          if (sourceNeedles.length > 0) {
-            const hay = colMatch(cells, 'source').toLowerCase();
-            if (hay && !sourceNeedles.some(n => hay.includes(n))) continue;
-          }
-          if (keywordNeedles.length > 0) {
-            const hay = (colMatch(cells, 'keyword', 'keywords', 'category') || '').toLowerCase();
-            if (hay && !keywordNeedles.some(n => hay.includes(n))) continue;
-          }
-          if (severityNeedles.length > 0) {
-            // Severity column may render as "S4 - minor" / "minor"
-            // / just "50" — substring match against the user's
-            // already-translated needles (numeric strings + text).
-            const hay = (colMatch(cells, 'severity', 's') || '').toLowerCase();
-            if (hay) {
-              // Build a permissive set: numeric ids AND their text names.
-              const _all = new Set();
-              for (const n of severityNeedles) {
-                _all.add(n);
-                for (const [name, id] of Object.entries(SEVERITY_IDS)) {
-                  if (String(id) === n) _all.add(name);
-                }
-              }
-              if (!Array.from(_all).some(n => hay.includes(n))) continue;
-            }
-          }
-
           const reporterText = colMatch(cells, 'reporter');
-          if (reporterNeedles.length > 0) {
-            const hay = reporterText.toLowerCase();
-            if (!reporterNeedles.some(n => hay.includes(n))) continue;
-          }
-
-          // QA Assignee is a custom column — only present if the user's
-          // View Issues page has it configured. If no header matches and the
-          // user asked to filter by it, we bail on the bug (can't verify)
-          // rather than letting it slip through unfiltered.
           const qaText = colMatch(cells, 'qa assignee', 'qa-assignee', 'qa_assignee');
-          if (qaNeedles.length > 0) {
-            if (!qaText && !Object.keys(headerIdx).some(h => h.includes('qa'))) continue;
-            const hay = qaText.toLowerCase();
-            if (!qaNeedles.some(n => hay.includes(n))) continue;
-          }
 
           matched.push({
             id,
