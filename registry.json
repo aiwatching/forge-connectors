@@ -42,9 +42,9 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.25.3",
+      "version": "0.25.4",
       "author": "forge",
-      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.3: post-server sanity check on fix_schedule / status / resolution columns rescues installs where Mantis silently drops URL-only filters after a form-POST keyword apply.",
+      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.4: adaptive page budget — when sanity check filters most server rows, walk up to 20 pages (computed from serverTotal / actual per-page count) instead of stopping at page 1 just because Mantis served 50 rows when we asked for 100.",
       "min_forge_version": "0.8.0"
     },
     {

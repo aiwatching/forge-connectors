@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.3"
+version: "0.25.4"
 author: forge
 category: connector
 mode: browser-side
@@ -675,6 +675,13 @@ tools:
       // verification.
       let PAGE_SIZE = 100;
       let MAX_PAGES = 2;
+      // Adaptive scan budget — when we KNOW the server's total filter is
+      // weaker than ours (sanity check drops most rows), we need to walk
+      // enough pages to find the rare true matches. Computed after page 1
+      // from serverTotal + actual per-page count. Capped to keep latency
+      // bounded; user can lower with `limit` once the right rows surface.
+      const MAX_PAGES_ADAPTIVE = 20;
+      let actualPageSize = 0;
 
       // ─── Build & submit filter via the page's REAL form ──────────────
       // Some customized Mantis installs ignore URL params like \`status_id[]\`
@@ -1263,6 +1270,18 @@ tools:
           const docText = (doc.body?.textContent || '');
           const m = docText.match(/Viewing\s+(?:Bugs|Issues)\s*\(\s*\d+\s*-\s*\d+\s*\/\s*(\d+)\s*\)/i);
           if (m) serverTotal = Number(m[1]);
+        }
+        // First page: lock actualPageSize and bump MAX_PAGES so we can
+        // walk enough rows to find sanity-passing matches in a big
+        // server result set. Without this, Mantis serving per_page=50
+        // (despite our per_page=100 request) caused the loop to think
+        // page 1 was already the last page and stop at scanned=50.
+        if (page === 1) {
+          actualPageSize = dataRows.length;
+          if (serverTotal && actualPageSize > 0) {
+            const needed = Math.ceil(serverTotal / actualPageSize);
+            MAX_PAGES = Math.min(MAX_PAGES_ADAPTIVE, Math.max(MAX_PAGES, needed));
+          }
         }
 
         const headerIdx = {};
