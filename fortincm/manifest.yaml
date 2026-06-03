@@ -1,7 +1,7 @@
 id: fortincm
 name: FortiNCM Device
 icon: 🌐
-version: "0.3.1"
+version: "0.3.2"
 author: forge
 category: connector
 mode: server-side
@@ -11,6 +11,12 @@ description: |
   appliance — Fortinet's centralised manager for fleets of FortiNAC
   instances. SSH/CLI plus REST API, one connector, one set of
   credentials.
+
+  ⚠️ REQUIRES NCM 8.0.0 OR NEWER — every REST tool path here is
+  derived from the v8.0 OpenAPI spec. Older NCM builds will return
+  404 on most calls. ALWAYS call check_compatibility(host=…) FIRST
+  on a fresh install; if it reports < 8.0, abort and tell the user
+  to upgrade the NCM appliance — do not attempt other tools.
 
   Connection: every tool takes `host` (the NCM mgmt IP — supply it per
   call, NOT stored in the connector). Username/password come from
@@ -321,6 +327,29 @@ tools:
     returns: "{ result: { accessTokenCount, accessTokens: [{ createdAt, expireTime, ttlMinutes, ... }] } }"
 
   # ─────────── NCM Basic Information ───────────
+
+  check_compatibility:
+    description: |
+      Compatibility guard — call this FIRST on a fresh install. Reads
+      /api/v3/version, returns the major version + a is_supported flag
+      (true if NCM >= 8.0.0). When false, ABORT and tell the user the
+      NCM build is unsupported — do not call any other tool.
+
+      This connector's REST paths are derived from the NCM 8.0 OpenAPI
+      spec. NCM 7.x has different paths and most tools will 404 or
+      return malformed data.
+    protocol: http
+    parameters:
+      host: { type: string, required: true }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/version"
+      headers:
+        Accept: "application/json"
+    returns: |
+      Plain text version string (e.g. "8.0", "8.1", "7.6"). Caller MUST
+      check the leading integer — abort if < 8. Supported: 8.x, 9.x, 10+.x.
+      Unsupported (do NOT proceed): 7.x and older.
 
   get_ncm_version:
     description: "FortiNCM software version (live returns just the major.minor string, e.g. '8.0'). Read-only, no AdomId."
