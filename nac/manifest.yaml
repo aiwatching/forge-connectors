@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.3"
+version: "0.12.4"
 author: forge
 category: connector
 mode: server-side
@@ -214,6 +214,14 @@ tools:
       'get system ha', 'get system interface', 'diagnose ...'. For the
       firmware version use get_version. For upgrades use upgrade (this
       tool does NOT auto-answer (y/N) prompts).
+
+      ⚠️ Avoid full-scan commands on big NACs:
+        • `diagnose host list all` on a NAC with thousands of hosts
+          can take minutes AND streams MB of output that overflows
+          chat context. Default timeout is 60s, raise via timeout_sec
+          if you really must, but better narrow the query (e.g. a
+          single MAC or a filter).
+        • `get log all` — same problem.
     protocol: ssh
     parameters:
       host:
@@ -233,13 +241,17 @@ tools:
         type: string
         required: true
         description: "The CLI command to run (e.g. 'get system status')."
+      timeout_sec:
+        type: number
+        default: 60
+        description: "Per-command timeout in seconds. Default 60. Bump to 300+ for slow diagnose commands, but consider whether the output will overflow chat context."
     ssh:
       prompt_regex: "#[ \\t]*$"
       commands:
         - "{args.command}"
         - "exit"
       success_on_close: true
-      timeout_sec: 60
+      timeout_sec: "{args.timeout_sec}"
 
   # ─────────── reboot (destructive) ───────────
   reboot:
