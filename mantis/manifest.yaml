@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.5"
+version: "0.25.6"
 author: forge
 category: connector
 mode: browser-side
@@ -1188,19 +1188,28 @@ tools:
       // already-logged-in Mantis tab; if it's not currently on
       // view_all_bug_page.php we GET that URL and parse the form via
       // DOMParser. fetch() inherits session cookies.
-      let form = document.getElementById('filters');
-      let formSource = 'live';
+      // v0.25.6: ALWAYS fetch fresh with show_advance=1, never trust the
+      // live page form. The live form depends on user's saved filter
+      // slot state — if their saved filter has the "advanced" section
+      // collapsed, multi_keyword (and other advanced fields) won't be
+      // rendered, so our filter silently drops. Fetching with
+      // show_advance=1 forces Mantis to render the full advanced section
+      // regardless of saved state. Falls back to live form only if fetch
+      // genuinely fails (network / auth).
+      let form;
+      let formSource = 'fetched-advanced';
+      try {
+        const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced&show_advance=1',
+          { credentials: 'include' });
+        const html = await fr.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        form = doc.getElementById('filters');
+      } catch (e) {
+        _formApplied._fetch_error = e.message;
+      }
       if (!form) {
-        try {
-          const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced',
-            { credentials: 'include' });
-          const html = await fr.text();
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          form = doc.getElementById('filters');
-          formSource = 'fetched';
-        } catch (e) {
-          _formApplied._fetch_error = e.message;
-        }
+        form = document.getElementById('filters');
+        formSource = form ? 'live-fallback' : 'none';
       }
       _formApplied._form_source = formSource;
 
