@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.1"
+version: "0.12.2"
 author: forge
 category: connector
 mode: server-side
@@ -613,7 +613,13 @@ tools:
       sort_dir:    { type: string, default: "asc", description: "asc | desc." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/actions/host?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}&filters={args.filters}"
+      url: "https://{args.host}:{args.port}/actions/host?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER="
+      query:
+        start: "{args.start}"
+        count: "{args.count}"
+        sortKey: "{args.sort_key}"
+        sortDir: "{args.sort_dir}"
+        filters: "{args.filters}"
       headers:
         Cookie: "JSESSIONID={args.jsessionid}"
         Authorization: "{args.session_key}"
