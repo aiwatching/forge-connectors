@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.24.0"
+version: "0.24.1"
 author: forge
 category: connector
 mode: browser-side
@@ -356,8 +356,15 @@ tools:
     parameters:
       query:
         type: string
-        description: "Free-text search on bug summary + description (no operator syntax)."
-        label: Search query (free text, matches summary + description)
+        description: |
+          Mantis full-text search (search= URL param). Searches ONLY
+          summary + description + additional info + bug notes — does
+          NOT search the Keyword field, Source field, or any custom
+          field. To filter by the Keyword column use the `keyword`
+          parameter, by Source use `source`, etc. Supports Mantis
+          boolean operators if your install enables full-text mode:
+          -word (NOT), +word (AND), "phrase" (exact), word1|word2 (OR).
+        label: Search query (full-text — summary / description / notes)
         required: false
       status:
         type: string
@@ -440,12 +447,13 @@ tools:
         required: false
       keyword:
         type: string
-        description: "Keywords filter — comma-separate for OR (e.g. 'regression,security')."
-        label: |
-          Mantis Keywords filter (Keyword column on the bug row). Comma-
-          separate for OR semantics (Mantis's filter form treats this
-          as a substring match). Examples: "QA Feature Test" or
-          "regression,security".
+        description: |
+          Mantis Keyword field filter (the "Keyword" column shown on
+          the bug row, e.g. "QA Automation Test"). This is the CORRECT
+          way to find bugs tagged with a given Keyword — the `query`
+          parameter does NOT search the Keyword field. Comma-separate
+          for multi-value (e.g. "regression,security").
+        label: Keyword field filter (NOT the same as `query`)
         required: false
       source:
         type: string
