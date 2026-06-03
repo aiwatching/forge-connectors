@@ -1,7 +1,7 @@
 id: fortincm
 name: FortiNCM Device
 icon: 🌐
-version: "0.3.0"
+version: "0.3.1"
 author: forge
 category: connector
 mode: server-side
@@ -1322,6 +1322,49 @@ tools:
         Content-Type: "application/json"
       body: "{args.ids_json}"
     returns: "{ code, message }"
+
+  # ─────────── Campus (the managed FortiNAC instances themselves) ───────────
+
+  list_campuses:
+    description: |
+      List the FortiNAC instances ("campuses") managed by this NCM.
+      Returns name, IP, version, status, role (STANDALONE / PRIMARY /
+      SECONDARY), ADOM membership, and which NCM node is preferred for
+      each. This is the "which NACs do I manage" tool.
+    protocol: http
+    parameters:
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/campus"
+      headers:
+        AdomId: "{args.adom_id}"
+        Accept: "application/json"
+    response_fields:
+      - result[].id
+      - result[].name
+      - result[].ipAddress
+      - result[].version
+      - result[].status
+      - result[].role
+      - result[].adomName
+      - result[].preferredNCMName
+    returns: "{ result: [CampusDto{ id, name, ipAddress, version, status, role, adomName, preferredNCMName, ... }] }"
+
+  get_campus:
+    description: "Detail for one managed FortiNAC (campus) by id."
+    protocol: http
+    parameters:
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
+      id:      { type: string, required: true, description: "Campus id (from list_campuses)." }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/campus/{args.id}"
+      headers:
+        AdomId: "{args.adom_id}"
+        Accept: "application/json"
 
   # ─────────── Network Devices (managed switches/APs in inventory) ───────────
 

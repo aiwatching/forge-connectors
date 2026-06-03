@@ -15,9 +15,9 @@
       "id": "fortincm",
       "name": "FortiNCM Device",
       "icon": "\ud83c\udf10",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": "forge",
-      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 SSH/CLI + REST API (75 tools) for Fortinet's centralised manager of FortiNAC fleets. v0.3 uses Forge core's bearer-token-exchange auth: configure username + password once, JWT is auto-fetched and refreshed silently (no more login/token threading). All REST tools live-verified against NCM v8.0; broken endpoints (list_schedules, count_endpoint_fingerprints, cluster_node_status, count_hosts_by_type) dropped \u2014 see BROKEN-APIS.md. Categories: SSH upgrade/get_version/run_command/reboot plus REST for NCM cluster, FirmwareUpgrade, Host, Group, Backup/Restore (SYSTEM_BACKUP/DATABASE_BACKUP), PolicyPackage/PolicyBlock, Scheduler, NetworkDevice, EndpointFingerprint, Dashboard, AdomAdmin, plus call_api for the remaining ~990 endpoints.",
+      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 central manager for FortiNAC fleets. SSH/CLI + REST (77 tools). v0.3.1 adds list_campuses/get_campus (the 'which NACs do I manage' query). Auto-auth via bearer-token-exchange \u2014 only username/password in settings, no token threading.",
       "min_forge_version": "0.10.24"
     },
     {
