@@ -6,9 +6,9 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.12.0",
+      "version": "0.12.1",
       "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (72 tools). v0.12 adds 5 group writes: add/remove devices to/from a group, copy group, update GroupDto, delete group. For host/port/user groups use call_api with system/group/add-members (needs type byte).",
+      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (72 tools). v0.12 adds 5 group writes: add/remove devices to/from a group, copy group, update GroupDto, delete group. For host/port/user groups use call_api with system/group/add-members (needs type byte). v0.12.1: call_api preserves slashes in path (url_encoding: none) + leaves out empty body so GET works with default body_json=\"\".",
       "min_forge_version": "0.9.17"
     },
     {

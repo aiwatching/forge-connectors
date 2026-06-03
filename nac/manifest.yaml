@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.0"
+version: "0.12.1"
 author: forge
 category: connector
 mode: server-side
@@ -768,10 +768,10 @@ tools:
       port:         { type: number, default: 8443 }
       jsessionid:   { type: string, required: true }
       session_key:  { type: string, required: true }
-      path:         { type: string, required: true, description: "Path under /actions/ — e.g. 'system/local-properties/cluster' or 'device/port/12345'. NO leading slash, NO /actions prefix." }
+      path:         { type: string, required: true, url_encoding: none, description: "Path under /actions/ — e.g. 'system/local-properties/cluster' or 'device/port/12345'. NO leading slash, NO /actions prefix. Slashes preserved (url_encoding: none)." }
       method:       { type: string, default: "GET", description: "GET | POST | PUT | DELETE." }
       extra_query:  { type: string, default: "", description: "Extra query string fragment (no leading ?). E.g. 'start=0&count=10&filters=...'. Standard NAC params auto-added." }
-      body_json:    { type: string, default: "", description: "JSON body for POST/PUT (string-encoded; will be sent as application/json)." }
+      body_json:    { type: string, default: "", description: "JSON body for POST/PUT (string-encoded; will be sent as application/json). Leave empty for GET/DELETE — Forge will not send a body." }
     request:
       method: "{args.method}"
       url: "https://{args.host}:{args.port}/actions/{args.path}?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&{args.extra_query}"
