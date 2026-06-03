@@ -15,9 +15,9 @@
       "id": "fortincm",
       "name": "FortiNCM Device",
       "icon": "\ud83c\udf10",
-      "version": "0.3.2",
+      "version": "0.3.3",
       "author": "forge",
-      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 central manager for FortiNAC fleets. Requires NCM 8.0.0+ (older builds return 404 on most calls; call check_compatibility(host) first). SSH/CLI + REST (78 tools). Auto-auth via bearer-token-exchange \u2014 only username/password in settings.",
+      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 central manager for FortiNAC fleets. Requires NCM 8.0.0+ (older builds return 404 on most calls; call check_compatibility(host) first). SSH/CLI + REST (78 tools). Auto-auth via bearer-token-exchange \u2014 only username/password in settings. v0.3.3: call_api fixes URL building \u2014 manifest now prepends /api/v3/, path is no-encoding-slashes (matches nac.call_api convention).",
       "min_forge_version": "0.10.24"
     },
     {

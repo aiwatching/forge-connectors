@@ -1,7 +1,7 @@
 id: fortincm
 name: FortiNCM Device
 icon: 🌐
-version: "0.3.2"
+version: "0.3.3"
 author: forge
 category: connector
 mode: server-side
@@ -1565,11 +1565,12 @@ tools:
       need.
 
       ALL endpoints live under /api/v3/<path>.
-      Pass `path` WITH the leading slash and WITHOUT the base URL.
+      Pass `path` WITHOUT the leading slash and WITHOUT the /api/v3
+      prefix — Forge prepends both. Slashes inside path are preserved.
       Examples:
-        path: "/api/v3/ncm/cluster/nodes"
-        path: "/api/v3/host/list"
-        path: "/api/v3/policy-package/{id}"
+        path: "ncm/cluster/nodes"
+        path: "host/list"
+        path: "policy-package/123"
 
       Auth (the Authorization header) is auto-applied by Forge's
       connector-level bearer-token-exchange — you do NOT pass a token.
@@ -1584,13 +1585,13 @@ tools:
     parameters:
       host:         { type: string, required: true }
       adom_id:      { type: string, default: "330201025894400", description: "AdomId header (most endpoints need it; some don't — value is still safe to send)." }
-      path:         { type: string, required: true, description: "Full path including /api/v3/ prefix and leading slash, e.g. '/api/v3/ncm/cluster/nodes'." }
+      path:         { type: string, required: true, url_encoding: none, description: "Path under /api/v3/ — e.g. 'ncm/cluster/nodes' or 'host/list'. NO leading slash, NO /api/v3 prefix (Forge prepends both). Slashes preserved (url_encoding: none)." }
       method:       { type: string, default: "GET", description: "GET | POST | PUT | DELETE." }
       query_params: { type: string, default: "", description: "Query string fragment (no leading ?). E.g. 'start=0&count=10&filter=name%3D%3Dfoo'." }
-      body_json:    { type: string, default: "", description: "JSON body for POST/PUT/DELETE (string-encoded)." }
+      body_json:    { type: string, default: "", description: "JSON body for POST/PUT/DELETE (string-encoded). Leave empty for GET/DELETE." }
     request:
       method: "{args.method}"
-      url: "https://{args.host}{args.path}?{args.query_params}"
+      url: "https://{args.host}/api/v3/{args.path}?{args.query_params}"
       headers:
         AdomId: "{args.adom_id}"
         Accept: "application/json"
