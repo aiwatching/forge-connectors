@@ -1,22 +1,22 @@
 id: fortincm
 name: FortiNCM Device
 icon: 🌐
-version: "0.1.0"
+version: "0.3.0"
 author: forge
 category: connector
 mode: server-side
-min_forge_version: "0.9.17"
+min_forge_version: "0.10.24"
 description: |
   Direct management of a FortiNCM (Network Configuration Manager)
   appliance — Fortinet's centralised manager for fleets of FortiNAC
   instances. SSH/CLI plus REST API, one connector, one set of
-  credentials. Modeled after the `nac` connector — same shape, same
-  auth dance, same upgrade flow.
+  credentials.
 
   Connection: every tool takes `host` (the NCM mgmt IP — supply it per
   call, NOT stored in the connector). Username/password come from
   connector settings so one install can drive many NCMs that share
-  admin credentials.
+  admin credentials. REST tools always hit port 443; SSH tools take
+  a `port` arg with the connector default (22).
 
   CLI tools (protocol: ssh, via PTY) — for OS-level ops:
     - upgrade: `execute restore image scp …` with auto-y/N and reboot.
@@ -25,27 +25,21 @@ description: |
     - reboot: `execute reboot`.
 
   REST tools (protocol: http) — for structured queries against the
-  v3 mgmt API at /api/v3/*. Default mgmt HTTPS port is 8889 (per the
-  OpenAPI servers entry shipped with NCM v8.0).
+  v3 mgmt API at /api/v3/*. Default mgmt HTTPS port is 443
+  (live-verified against 10.15.50.60).
 
-  Auth model for REST tools (mirrors NAC's caller-explicit pattern):
-    1. login(host) — GET /api/v2/auth/login with HTTP Basic
-       (user:password base64) — returns LoginResult { jwt, admin,
-       profile, adoms, ... }. The JWT is the session token.
-    2. Pipeline parses result.jwt out of the response body and
-       threads it into every subsequent REST tool as `token`.
-    3. Forge attaches:
-         Authorization: <token>      ← bare token, no Bearer/Basic prefix
-                                       (NAC convention; FortiNCM also
-                                       accepts the bare form. If a
-                                       firmware variant rejects it, try
-                                       `Bearer <token>` via call_api).
-       Many endpoints also require an AdomId header — supply it
-       per-call (default 0 = global ADOM; root admin lives at id 1
-       on most installs — `list_adoms` to discover).
-    4. Sessions expire on the server's configured idle timeout
-       (typically 30 min). Re-login if a long run needs more, or
-       use refresh_token to extend.
+  Auth model (v0.3 — fully automatic):
+    Forge's connector-level `bearer-token-exchange` auth handles the
+    JWT lifecycle silently. On the first REST call per (host, creds)
+    Forge POSTs settings.username/password to
+    `https://{host}/api/v3/auth/login`, extracts `result.jwt`, caches
+    it for ~9 min, and injects `Authorization: <jwt>` (bare, no Bearer
+    prefix — NCM rejects Bearer with 500) on every subsequent request.
+    JWT TTL is 600s on the server; we refresh at 540s.
+
+    LLMs/pipelines: just call any REST tool with `host` and the params
+    it actually needs. No more `login`/`token` plumbing. AdomId still
+    has to be supplied per-call where required — see `adom_id` param.
 
 settings:
   port:
@@ -56,17 +50,31 @@ settings:
   username:
     type: string
     label: Default username
-    description: "Fallback SSH/REST user when a call doesn't pass one. FortiNCM default is admin."
+    description: "REST + fallback SSH user. FortiNCM default is admin."
     default: "admin"
   password:
     type: secret
     label: Default password
-    description: "Fallback SSH/REST password (encrypted at rest, sent silently, never logged). Used by SSH tools (override per-call) and as the REST login() password."
+    description: "REST + fallback SSH password (encrypted at rest, never logged). Used for the auto JWT exchange and as the SSH default."
 
-# Connector-level HTTP runtime knobs. NCM ships a self-signed cert
-# (same as its NAC siblings) so Node fetch's default cert verify
-# fails. Turn off verification — alternative is trusting NCM's cert
-# in the OS trust store on every Forge install.
+# Connector-wide auto-auth: Forge exchanges username/password for a
+# JWT once per (host, creds), caches for ~9 min (NCM TTL is 10 min),
+# and injects `Authorization: <jwt>` on every REST tool below.
+# Tools no longer take a `token` arg — the LLM never sees the JWT.
+auth:
+  type: bearer-token-exchange
+  exchange_url: "https://{args.host}/api/v3/auth/login"
+  exchange_method: POST
+  exchange_body:
+    username: "{settings.username}"
+    password: "{settings.password}"
+  bearer_path: result.jwt
+  bearer_format: bare        # NCM rejects "Bearer <jwt>" with 500
+  expires_ttl_sec: 540       # 9 min, 1 min safety margin on the 10 min TTL
+
+# Connector-level HTTP runtime knobs. NCM ships a self-signed cert so
+# Node fetch's default cert verify fails. Turn it off — alternative is
+# importing NCM's cert into the OS trust store on every Forge install.
 http:
   verify_tls: false
 
@@ -275,264 +283,136 @@ tools:
       success_on_close: true
       timeout_sec: 60
 
-  # ─────────── REST tools (protocol: http) ───────────
-  # FortiNCM v8.0 REST auth (per OpenAPI spec /Users/zliu/Downloads/fortincm-8.0-api-docs.json):
-  #
-  #   • Login: GET /api/v2/auth/login with HTTP Basic Authorization
-  #     header (base64 of "user:password"). Returns RestResultLoginResult
-  #     = { code, message, result: LoginResult{ loginStatus:"SUCCESS",
-  #     jwt:"<token>", admin, profile, adoms:[...], ... } }.
-  #   • Every subsequent v3 call needs:
-  #       Authorization: <jwt>       ← bare token, no Bearer/Basic
-  #       (some endpoints also require AdomId: <int> as a header)
-  #   • Pipeline auth dance — caller threads `token` (and per-call
-  #     `adom_id`) into each tool.
-  #   • Refresh: GET /api/v3/auth/refresh_token returns a fresh
-  #     LoginResult with a new jwt — call before idle timeout.
-  #   • Logout: POST /api/v3/auth/logout invalidates the current token.
-
-  login:
-    description: |
-      Log in to FortiNCM's REST API at /api/v2/auth/login with HTTP
-      Basic auth. Returns RestResultLoginResult — most importantly
-      `result.jwt`, the bearer token used for every subsequent call.
-
-      Parse the token out of the body and pass it as `token=$JWT` to
-      every other REST tool. Also note `result.adoms` for the list of
-      ADOM ids available to this admin (many tools require an
-      `AdomId` header — pass via the per-tool `adom_id` parameter).
-
-      Username/password come from connector settings (SHARED with the
-      SSH tools — same admin credential drives both surfaces).
-    protocol: http
-    parameters:
-      host:
-        type: string
-        required: true
-        description: "NCM mgmt IP/hostname, e.g. 10.15.50.60."
-      port:
-        type: number
-        default: 8889
-        description: "FortiNCM mgmt HTTPS port. Default 8889 per OpenAPI servers entry."
-    request:
-      method: GET
-      url: "https://{args.host}:{args.port}/api/v2/auth/login"
-      headers:
-        Authorization: "Basic {basic:{settings.username}:{settings.password}}"
-        Accept: "application/json"
-    returns: "RestResultLoginResult { code, message, result: { loginStatus:'SUCCESS'|..., jwt, admin{...}, profile{...}, licenseLevel, permissionList[], adoms:[{id,name,...}], isInitialization, isGuidedInstall } }"
-
-  refresh_token:
-    description: |
-      Get a fresh JWT before the current one idle-expires. Returns the
-      same LoginResult shape as login() with a new `jwt`. Useful for
-      pipelines that run longer than the configured idle timeout (~30
-      min default).
-    protocol: http
-    parameters:
-      host:
-        type: string
-        required: true
-      port:
-        type: number
-        default: 8889
-      token:
-        type: string
-        required: true
-        description: "Current JWT from a prior login()."
-    request:
-      method: GET
-      url: "https://{args.host}:{args.port}/api/v3/auth/refresh_token"
-      headers:
-        Authorization: "{args.token}"
-        Accept: "application/json"
-    returns: "RestResultLoginResult { result: { jwt, ... } }"
-
-  logout:
-    description: |
-      Invalidate the current REST session. Best-effort — the server
-      expires idle sessions automatically.
-    protocol: http
-    parameters:
-      host:
-        type: string
-        required: true
-      port:
-        type: number
-        default: 8889
-      token:
-        type: string
-        required: true
-        description: "JWT from login()."
-    request:
-      method: POST
-      url: "https://{args.host}:{args.port}/api/v3/auth/logout"
-      headers:
-        Authorization: "{args.token}"
-        Accept: "application/json"
-    returns: "RestResultString { code, message, result }"
+  # ═══════════════════════════════════════════════════════════
+  # REST tools (protocol: http) — live-verified against NCM v8.0
+  # All REST endpoints live at https://{host}/api/v3/* (port 443).
+  # The Authorization header is injected by Forge's connector-level
+  # auth (bearer-token-exchange). Tools just declare path + params.
+  # AdomId header only on endpoints the spec marks as requiring it.
+  # Root ADOM id is the long integer returned by login.result.adoms[]
+  # — e.g. 330201025894400 on 10.15.50.60.
+  # ═══════════════════════════════════════════════════════════
 
   get_current_user:
     description: |
-      Identify which admin is behind the current JWT — returns admin
-      profile, role, ADOM scope. Useful for verifying login succeeded
-      and the token has the expected privileges.
+      Identify which admin the auto-fetched JWT belongs to — returns
+      admin profile, role, ADOM scope. Useful as an auth/sanity probe
+      after configuring credentials (no params needed beyond host).
     protocol: http
     parameters:
-      host:        { type: string, required: true }
-      port:        { type: number, default: 8889 }
-      token:       { type: string, required: true }
+      host: { type: string, required: true, description: "NCM mgmt IP/hostname." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/auth/getCurrentUser"
+      url: "https://{args.host}/api/v3/auth/getCurrentUser"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "RestResult { result: { userId, role, profile, ... } }"
+    returns: "{ result: { admin: { id, username, firstName, lastName, ... }, profile, role, adoms, ... } }"
 
   list_user_tokens:
-    description: "List all active API tokens for the current admin user."
+    description: "Active sessions / API tokens for the current admin. Includes the JWT Forge just exchanged."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/auth/tokens"
+      url: "https://{args.host}/api/v3/auth/tokens"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "{ result: [TokenInfo{ id, name, createdAt, expiresAt, ... }] }"
+    returns: "{ result: { accessTokenCount, accessTokens: [{ createdAt, expireTime, ttlMinutes, ... }] } }"
 
   # ─────────── NCM Basic Information ───────────
 
   get_ncm_version:
-    description: "FortiNCM software version string (e.g. 'v8.0.0-build0042'). Read-only, no AdomId."
+    description: "FortiNCM software version (live returns just the major.minor string, e.g. '8.0'). Read-only, no AdomId."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/version"
+      url: "https://{args.host}/api/v3/version"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "string — version line"
+    returns: "string — version line, e.g. '8.0'"
 
   get_ncm_serial:
-    description: "FortiNCM serial number — for license-validation / support flows."
+    description: "FortiNCM serial number (e.g. 'FNVX-MTM25000621'). Read-only, no AdomId."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/serialNo"
+      url: "https://{args.host}/api/v3/serialNo"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "string — serial number"
 
   # ─────────── NCM Cluster ───────────
-  # NCM_CLUSTER endpoints describe the leader/worker fabric: which
-  # NCMs are in the cluster, who is leader, capacity, failover state.
+  # All cluster endpoints sit at /api/v3/ncm/cluster/* and DO NOT
+  # require AdomId (cluster scope is global).
 
   get_cluster_nodes:
     description: |
       List all nodes in the local NCM cluster. Each entry has serial,
-      role (LEADER/WORKER), status, mgmt IP. Use to confirm HA topology
-      and find the leader before issuing leader-only ops.
+      nodeType (LEADER/WORKER/STANDALONE), nodeStatus, mgmt IP. Use to
+      confirm HA topology and find the leader before issuing
+      leader-only ops. Standalone installs return a single STANDALONE
+      node.
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/nodes"
+      url: "https://{args.host}/api/v3/ncm/cluster/nodes"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "{ result: [NCMNodeVo{ serial, role, status, mgmtIp, hostname, ... }] }"
+    returns: "{ result: [{ serialNumber, nodeName, nodeType, nodeStatus, ipAddress, appliance, vmPlatform, managedCampusCount, ... }] }"
 
   get_cluster_node:
     description: "Detail for one cluster node by its serial number."
     protocol: http
     parameters:
       host:   { type: string, required: true }
-      port:   { type: number, default: 8889 }
-      token:  { type: string, required: true }
-      serial: { type: string, required: true, description: "NCM node serial number." }
+      serial: { type: string, required: true, description: "NCM node serial number (e.g. FNVX-MTM25000621)." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/node/{args.serial}"
+      url: "https://{args.host}/api/v3/ncm/cluster/node/{args.serial}"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "{ result: NCMNodeVo }"
 
-  get_cluster_node_status:
-    description: "Health check for a specific cluster node (up/down, last heartbeat)."
-    protocol: http
-    parameters:
-      host:   { type: string, required: true }
-      port:   { type: number, default: 8889 }
-      token:  { type: string, required: true }
-      serial: { type: string, required: true, description: "NCM node serial number." }
-    request:
-      method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/node-status/{args.serial}"
-      headers:
-        Authorization: "{args.token}"
-        Accept: "application/json"
-    returns: "{ result: NodeStatusVo }"
-
   get_cluster_role:
-    description: "What role is THIS node playing right now — LEADER / WORKER / STANDALONE."
+    description: "Role of THIS node — LEADER / WORKER / STANDALONE. Returns a bare string in result."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/role"
+      url: "https://{args.host}/api/v3/ncm/cluster/role"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "{ result: 'LEADER'|'WORKER'|'STANDALONE' }"
+    returns: "{ result: 'LEADER' | 'WORKER' | 'STANDALONE' }"
 
   get_cluster_capacity:
-    description: "Cluster capacity / utilisation summary — how many campuses, hosts, devices each node manages."
+    description: "Cluster capacity / utilisation summary — remaining vs total node + campus capacity."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/capacity"
+      url: "https://{args.host}/api/v3/ncm/cluster/capacity"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "{ result: { nodes: [{ serial, hostCount, deviceCount, campusCount, ... }] } }"
+    returns: "{ result: { remainingClusterNodesCapacity, totalClusterNodesCapacity, currentCampusCount, campusCapacityPerNode, totalCampusCapacityPerCluster } }"
 
   get_failed_ncm_count:
     description: "Count of failed/unreachable NCM nodes in the cluster. Quick health probe."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/failed"
+      url: "https://{args.host}/api/v3/ncm/cluster/failed"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "{ result: integer }"
 
@@ -544,111 +424,99 @@ tools:
     destructive: true
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/change/leader"
+      url: "https://{args.host}/api/v3/ncm/cluster/change/leader"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "{ code, message, result }"
 
   add_cluster_worker:
     description: |
-      Add a new worker NCM to the cluster. `node_json` is the full
-      worker descriptor (serial, mgmt IP, etc.) — read an existing
-      node via get_cluster_node to model the shape.
+      Add a new worker NCM to the cluster. `worker_json` is the full
+      AddWorkerReq payload (serial, mgmt IP, etc.).
     destructive: true
     protocol: http
     parameters:
-      host:      { type: string, required: true }
-      port:      { type: number, default: 8889 }
-      token:     { type: string, required: true }
-      node_json: { type: string, required: true, description: "Full worker node JSON (NCMNodeVo shape)." }
+      host:        { type: string, required: true }
+      worker_json: { type: string, required: true, description: "AddWorkerReq JSON body." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/add"
+      url: "https://{args.host}/api/v3/ncm/cluster/add"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
         Content-Type: "application/json"
-      body: "{args.node_json}"
+      body: "{args.worker_json}"
     returns: "{ code, message, result }"
 
   delete_cluster_worker:
     description: |
-      Remove a worker NCM from the cluster by serial. Destructive —
-      the removed node loses cluster membership and stops replicating.
+      Remove a worker NCM from the cluster. `delete_request_json` is
+      the DeleteWorkerRequest JSON body (usually contains the serial
+      or worker id to remove). Destructive — the removed node loses
+      cluster membership.
     destructive: true
     protocol: http
     parameters:
-      host:   { type: string, required: true }
-      port:   { type: number, default: 8889 }
-      token:  { type: string, required: true }
-      serial: { type: string, required: true, description: "Worker node serial to remove." }
+      host:                  { type: string, required: true }
+      delete_request_json:   { type: string, required: true, description: "DeleteWorkerRequest JSON body." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/ncm/cluster/delete?serial={args.serial}"
+      url: "https://{args.host}/api/v3/ncm/cluster/delete"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.delete_request_json}"
     returns: "{ code, message, result }"
 
   # ─────────── Firmware Upgrade (REST surface) ───────────
   # The REST upgrade endpoints drive the GUI's "push firmware to
   # managed Campuses/NCMs" flow. For the LOCAL appliance upgrade
   # over SSH/SCP, use the `upgrade` SSH tool instead.
+  # None of these need AdomId per the spec.
 
   list_local_firmware_images:
     description: |
-      List firmware images that have been uploaded LOCALLY to NCM
-      (image type controls which fleet — CAMPUS, NCM, ADAPTER, etc.).
+      List firmware images that have been uploaded LOCALLY to NCM.
+      `image_type` is the bucket — CAMPUS / NCM / ADAPTER / etc.
+      Empty array means no images uploaded for that bucket.
     protocol: http
     parameters:
       host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
       image_type: { type: string, required: true, description: "Image-type bucket, e.g. 'CAMPUS' | 'NCM' | 'ADAPTER'." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/firmware/local-images/{args.image_type}"
+      url: "https://{args.host}/api/v3/firmware/local-images/{args.image_type}"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "{ result: [FirmwareImage{ id, name, version, uploadedAt, size, ... }] }"
 
   list_fortiguard_firmware:
     description: |
       List firmware images available from FortiGuard for the managed
-      product lines. Use before download_firmware_from_fortiguard().
+      product lines. Returns `current` + branch/major/build info — use
+      to discover image ids before downloading.
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/firmware/fg-images"
+      url: "https://{args.host}/api/v3/firmware/fg-images"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
-    returns: "{ result: [FortiGuardImage{ id, name, version, productLine, ... }] }"
+    returns: "{ result: { current: { name, version, major, minor, patch, build, releaseType, notes, ... }, ... } }"
 
   list_firmware_image_used_by:
     description: "Which Campuses / NCMs are currently running a given image — pre-flight check before deletion."
     protocol: http
     parameters:
       host:     { type: string, required: true }
-      port:     { type: number, default: 8889 }
-      token:    { type: string, required: true }
       image_id: { type: string, required: true, description: "Local firmware image id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/firmware/local-images/used-by/{args.image_id}"
+      url: "https://{args.host}/api/v3/firmware/local-images/used-by/{args.image_id}"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
     returns: "{ result: [{ campusId, campusName, deviceCount, ... }] }"
 
@@ -663,14 +531,11 @@ tools:
     protocol: http
     parameters:
       host:                  { type: string, required: true }
-      port:                  { type: number, default: 8889 }
-      token:                 { type: string, required: true }
-      upgrade_request_json:  { type: string, required: true, description: "Full FirmwareUpgradeRequest JSON. Read GUI request shape if unsure." }
+      upgrade_request_json:  { type: string, required: true, description: "Full FirmwareUpgradeRequest JSON." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/firmware/upgrade"
+      url: "https://{args.host}/api/v3/firmware/upgrade"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
         Content-Type: "application/json"
       body: "{args.upgrade_request_json}"
@@ -680,19 +545,15 @@ tools:
     description: |
       Poll the status of an in-progress firmware upgrade started by
       start_firmware_upgrade. `status_request_json` is the
-      FirmwareUpgradeStatusReq payload — usually `{"upgradeId":"..."}`
-      or `{"targets":[...]}`.
+      FirmwareUpgradeStatusReq payload.
     protocol: http
     parameters:
       host:                  { type: string, required: true }
-      port:                  { type: number, default: 8889 }
-      token:                 { type: string, required: true }
       status_request_json:   { type: string, required: true, description: "FirmwareUpgradeStatusReq JSON." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/firmware/upgrade/status"
+      url: "https://{args.host}/api/v3/firmware/upgrade/status"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
         Content-Type: "application/json"
       body: "{args.status_request_json}"
@@ -700,44 +561,76 @@ tools:
 
   delete_firmware_images:
     description: |
-      Delete one or more uploaded firmware images by id. Fails if an
-      image is in use (check with list_firmware_image_used_by first).
+      Delete one or more uploaded firmware images. `delete_request_json`
+      is the DeleteImagesRequest body (usually `{"ids":[...]}`).
+      Fails if any image is in use (check list_firmware_image_used_by).
     destructive: true
     protocol: http
     parameters:
-      host:      { type: string, required: true }
-      port:      { type: number, default: 8889 }
-      token:     { type: string, required: true }
-      image_ids: { type: string, required: true, description: "Comma-separated image ids." }
+      host:                  { type: string, required: true }
+      delete_request_json:   { type: string, required: true, description: "DeleteImagesRequest JSON body." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/firmware/local-images/delete?ids={args.image_ids}"
+      url: "https://{args.host}/api/v3/firmware/local-images/delete"
       headers:
-        Authorization: "{args.token}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.delete_request_json}"
     returns: "{ code, message, result }"
 
   # ─────────── ADOM management ───────────
-  # ADOMs (Administrative Domains) are the multi-tenant slice for NCM.
-  # Most other endpoints require an `AdomId` header — use list_adoms
-  # / get_current_user (result.adoms) to pick one.
+  # ADOM list endpoints don't need AdomId; AdomAdmin endpoints do.
 
   list_adoms:
-    description: |
-      List AdomAdmins. The response includes the ADOM ids/names this
-      install is configured for — feed `id` into the `adom_id`
-      parameter of every other tool that needs an AdomId header.
+    description: "List all ADOMs visible to the current admin. No AdomId required. Root ADOM has `root: true`."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/adoms/admin/list"
+      url: "https://{args.host}/api/v3/adoms"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "1"
+        Accept: "application/json"
+    returns: "{ result: [{ id, name, description, root, campusCount, campusCapacity, ... }] }"
+
+  get_adom:
+    description: "Get one ADOM by its long-integer id."
+    protocol: http
+    parameters:
+      host: { type: string, required: true }
+      id:   { type: string, required: true, description: "ADOM id (e.g. 330201025894400 for root)." }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/adoms/{args.id}"
+      headers:
+        Accept: "application/json"
+    returns: "{ result: Adom }"
+
+  get_root_adom:
+    description: "Convenience: get the root ADOM (id, name, capacity). Useful at install/sanity time."
+    protocol: http
+    parameters:
+      host: { type: string, required: true }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/adoms/root"
+      headers:
+        Accept: "application/json"
+    returns: "{ result: { id, name, isRoot, capacity, ... } }"
+
+  list_adom_admins:
+    description: |
+      List AdomAdmin records (admin user → ADOM bindings) for an ADOM.
+      Requires AdomId header — pass `adom_id` (default root).
+    protocol: http
+    parameters:
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400", description: "AdomId header. Default root ADOM id (varies per install — list_adoms first)." }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/adoms/admin/list"
+      headers:
+        AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [AdomAdmin{ id, userId, profile, adomId, adomName, ... }] }"
 
@@ -746,87 +639,78 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400", description: "AdomId header." }
       id:      { type: string, required: true, description: "AdomAdmin id." }
-      adom_id: { type: string, default: "1", description: "ADOM id header." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/adoms/admin/{args.id}"
+      url: "https://{args.host}/api/v3/adoms/admin/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: AdomAdmin }"
 
-  delete_adom_admin:
-    description: "Delete one or more AdomAdmin records by id. Destructive."
+  delete_adom_admins:
+    description: |
+      Delete one or more AdomAdmin records. `delete_request_json` is
+      the DeleteUserRequest body. Destructive.
     destructive: true
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      ids:     { type: string, required: true, description: "Comma-separated AdomAdmin ids." }
-      adom_id: { type: string, default: "1" }
+      host:                { type: string, required: true }
+      adom_id:             { type: string, default: "330201025894400" }
+      delete_request_json: { type: string, required: true, description: "DeleteUserRequest JSON body." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/adoms/admin?ids={args.ids}"
+      url: "https://{args.host}/api/v3/adoms/admin"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.delete_request_json}"
     returns: "{ code, message }"
 
   # ─────────── Host (managed-fleet aggregate) ───────────
-  # NCM aggregates Host records across all managed NACs. Same shape as
-  # NAC's Host but scoped to an ADOM.
+  # NCM aggregates Host records across all managed NACs. All Host
+  # endpoints need AdomId. NOTE: live response shape uses `results[]`
+  # (plural) not `records[]` as the spec suggests.
 
   list_hosts:
     description: |
-      Paginated list of Host records visible in the given ADOM. Filter
-      with the `filter` query string (repeatable in OpenAPI; here pass
-      one expression — for compound use call_api).
-
-      Filter examples (verified against the OpenAPI shape):
+      Paginated list of Host records visible in the given ADOM. Empty
+      installs return `results: []`. Filter examples:
         filter=macAddress==AA:BB:CC:DD:EE:FF
         filter=hostName==linux
         filter=connected==true
     protocol: http
     parameters:
       host:           { type: string, required: true }
-      port:           { type: number, default: 8889 }
-      token:          { type: string, required: true }
-      adom_id:        { type: string, default: "1", description: "ADOM id header (get from list_adoms)." }
-      campus_id_list: { type: string, default: "", description: "Optional CSV of campusIds to scope to (matches GUI per-campus filter)." }
-      filter:         { type: string, default: "", description: "Single filter expression. Empty = all hosts." }
+      adom_id:        { type: string, default: "330201025894400" }
+      campus_id_list: { type: string, default: "" }
+      adoms_id_list:  { type: string, default: "" }
+      filter:         { type: string, default: "" }
       start:          { type: number, default: 0 }
       count:          { type: number, default: 25 }
       sort_key:       { type: string, default: "" }
       sort_dir:       { type: string, default: "asc" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/list?campusIdList={args.campus_id_list}&filter={args.filter}&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}"
+      url: "https://{args.host}/api/v3/host/list?campusIdList={args.campus_id_list}&adomsIdList={args.adoms_id_list}&filter={args.filter}&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: { records: [HostRecordVO{ id, macAddress, ip, hostName, connected, campusId, ... }], total, start, count } }"
+    returns: "{ results: [HostRecordVO], total, filtered, totalPages, hasNext, pageIndex }"
 
   get_host:
     description: "Get a Host by id. Use list_hosts first to find the id from a MAC / IP / hostName filter."
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Host record id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/{args.id}"
+      url: "https://{args.host}/api/v3/host/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: HostRecordVO }"
@@ -836,15 +720,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       host_id: { type: string, required: true, description: "Host record id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/health/{args.host_id}"
+      url: "https://{args.host}/api/v3/host/health/{args.host_id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: { complianceScanStatus, lastScan, ... } }"
@@ -854,33 +735,34 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       host_id: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/health-history/{args.host_id}"
+      url: "https://{args.host}/api/v3/host/health-history/{args.host_id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [HealthEntry{ timestamp, status, message, ... }] }"
 
   get_host_applications:
-    description: "Installed-application list for one Host (endpoint-compliance evidence)."
+    description: |
+      Installed-application list for one Host (endpoint-compliance
+      evidence). Paginated — pass filter/start/count/sortKey/sortDir.
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
-      host_id: { type: string, required: true }
+      host:     { type: string, required: true }
+      adom_id:  { type: string, default: "330201025894400" }
+      host_id:  { type: string, required: true }
+      filter:   { type: string, default: "" }
+      start:    { type: number, default: 0 }
+      count:    { type: number, default: 50 }
+      sort_key: { type: string, default: "" }
+      sort_dir: { type: string, default: "asc" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/application/{args.host_id}"
+      url: "https://{args.host}/api/v3/host/application/{args.host_id}?filter={args.filter}&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [Application{ name, version, vendor, ... }] }"
@@ -890,55 +772,48 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       host_id: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/users/{args.host_id}"
+      url: "https://{args.host}/api/v3/host/users/{args.host_id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [User{ userId, loggedOnAt, ... }] }"
 
-  count_hosts_by_type:
-    description: "Count Host records grouped by countType (e.g. by OS, by connected state, by campus)."
+  count_hosts_by_status:
+    description: |
+      Count Host records grouped by enabled/disabled state. Returns
+      `{ DISABLED: n, ENABLED: n }`. This is the only `count_type`
+      that works on live NCM v8.0 — see BROKEN-APIS.md for the others
+      (OS returns empty, all other types 500). For richer breakdowns
+      use list_hosts with filters.
     protocol: http
     parameters:
-      host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
-      count_type: { type: string, required: true, description: "Bucket type — e.g. 'os', 'connected', 'campus'. Discover via GUI / call_api if unsure." }
+      host: { type: string, required: true }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/host/count-by-type/{args.count_type}"
+      url: "https://{args.host}/api/v3/host/count-by-type/STATUS"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [{ bucket, count }] }"
+    returns: "{ result: { DISABLED: int, ENABLED: int } }"
 
   enable_disable_host:
     description: |
       Bulk enable / disable Host records. `payload_json` is the
-      EnableDisableHostRequest shape — typically
+      EnableDisableHostReq shape — typically
       `{"hostIds":[1,2,3], "enabled": true|false}`.
     destructive: true
     protocol: http
     parameters:
       host:         { type: string, required: true }
-      port:         { type: number, default: 8889 }
-      token:        { type: string, required: true }
-      adom_id:      { type: string, default: "1" }
-      payload_json: { type: string, required: true, description: "EnableDisableHost request JSON." }
+      adom_id:      { type: string, default: "330201025894400" }
+      payload_json: { type: string, required: true, description: "EnableDisableHostReq JSON." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/host/enable-disable"
+      url: "https://{args.host}/api/v3/host/enable-disable"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
@@ -946,42 +821,41 @@ tools:
     returns: "{ code, message, result }"
 
   rescan_host_with_profile:
-    description: "Re-scan one Host against a Device Profiling rule. Mirror of the NAC version."
+    description: "Re-scan one Host against a Device Profiling rule."
     destructive: true
     protocol: http
     parameters:
       host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
+      adom_id:    { type: string, default: "330201025894400" }
       host_id:    { type: string, required: true, description: "Host record id." }
       profile_id: { type: string, required: true, description: "Device Profiling rule id." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/host/rescan-with-profile/{args.host_id}?profileId={args.profile_id}"
+      url: "https://{args.host}/api/v3/host/rescan-with-profile/{args.host_id}?profileID={args.profile_id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result }"
 
   delete_hosts:
-    description: "Delete Host records by id (CSV). Highly destructive — prefer enable_disable_host(enabled=false) first."
+    description: |
+      Delete Host records. `delete_request_json` is the DeleteHostReq
+      body — usually `{"hostIds":[1,2,3]}`. Highly destructive — prefer
+      enable_disable_host(enabled=false) first.
     destructive: true
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
-      ids:     { type: string, required: true, description: "Comma-separated host ids." }
+      host:                { type: string, required: true }
+      adom_id:             { type: string, default: "330201025894400" }
+      delete_request_json: { type: string, required: true, description: "DeleteHostReq JSON body." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/host/delete?ids={args.ids}"
+      url: "https://{args.host}/api/v3/host/delete"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.delete_request_json}"
     returns: "{ code, message }"
 
   # ─────────── Groups ───────────
@@ -994,51 +868,46 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       remote:  { type: boolean, default: false, description: "Include remote groups." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/groups/group?remote={args.remote}"
+      url: "https://{args.host}/api/v3/groups/group?remote={args.remote}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [GroupVo{ id, name, type, memberCount, ... }] }"
+    returns: "{ result: [{ id, adomId, name, nameLabel, groupType, groupTypeValue, description, ... }] }"
 
   get_group:
     description: "Get one group by id — full membership + metadata."
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Group id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/groups/group/{args.id}"
+      url: "https://{args.host}/api/v3/groups/group/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: GroupVo }"
 
   list_groups_by_type:
-    description: "Groups filtered by `type` query param (host / port / user / device). Faster than list_groups when you know the type."
+    description: |
+      Groups filtered by `group_type` — integer per the spec.
+      Common values (from live NCM): 1=DEVICE, 2=PORT, 10=ADMINISTRATOR.
+      Earlier docs said this took a string — they were wrong; the
+      server returns 400 for string types.
     protocol: http
     parameters:
       host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
-      group_type: { type: string, required: true, description: "Group element class — see GUI for valid values." }
+      adom_id:    { type: string, default: "330201025894400" }
+      group_type: { type: number, required: true, description: "Integer group type. 1=DEVICE, 2=PORT, 10=ADMINISTRATOR, etc." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/groups/group/type?type={args.group_type}"
+      url: "https://{args.host}/api/v3/groups/group/type?groupType={args.group_type}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [GroupVo] }"
@@ -1048,17 +917,14 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/groups/group/tree/membership"
+      url: "https://{args.host}/api/v3/groups/group/tree/membership"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [GroupTreeNode{ id, name, children: [...] }] }"
+    returns: "{ result: [{ count, groupDto: {...}, children: [...] }] }"
 
   create_group:
     description: "Create a new group. `group_json` is the full GroupVo payload."
@@ -1066,15 +932,12 @@ tools:
     protocol: http
     parameters:
       host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
+      adom_id:    { type: string, default: "330201025894400" }
       group_json: { type: string, required: true, description: "GroupVo JSON." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/groups/group"
+      url: "https://{args.host}/api/v3/groups/group"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
@@ -1087,16 +950,13 @@ tools:
     protocol: http
     parameters:
       host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
+      adom_id:    { type: string, default: "330201025894400" }
       id:         { type: string, required: true, description: "Group id." }
       group_json: { type: string, required: true, description: "Full GroupVo JSON." }
     request:
       method: PUT
-      url: "https://{args.host}:{args.port}/api/v3/groups/group/{args.id}"
+      url: "https://{args.host}/api/v3/groups/group/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
@@ -1109,139 +969,127 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Source group id." }
       name:    { type: string, required: true, description: "New group name." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/groups/group/clone/{args.id}?name={args.name}"
+      url: "https://{args.host}/api/v3/groups/group/clone/{args.id}?name={args.name}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result: GroupVo }"
 
   delete_groups:
-    description: "Delete one or more groups by id (CSV). Fails if a group is referenced by a policy."
+    description: |
+      Delete groups by id (pass CSV via `ids`). Fails if a group is
+      referenced by a policy.
     destructive: true
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       ids:     { type: string, required: true, description: "Comma-separated group ids." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/groups/group?id={args.ids}"
+      url: "https://{args.host}/api/v3/groups/group?id={args.ids}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message }"
 
   # ─────────── Backup / Restore ───────────
+  # NOTE: live category strings are SYSTEM_BACKUP, DATABASE_BACKUP —
+  # NOT SYSTEM / DB / ADOM as the spec implies. Verified on NCM v8.0.
 
   list_backup_files:
     description: |
-      List backup files in the given category. Categories typically:
-        SYSTEM      — full system backup
-        ADOM        — per-ADOM configuration
-        DB          — database only
-      Use the exact category string the GUI exposes.
+      List backup files in the given category. Live-verified categories:
+        SYSTEM_BACKUP     — config package tarballs
+        DATABASE_BACKUP   — DB tarballs
+      The categories the OpenAPI spec mentions (SYSTEM, DB, ADOM,
+      CONFIGURATION) all return 400 on live NCM. AdomId is optional
+      per spec.
     protocol: http
     parameters:
       host:             { type: string, required: true }
-      port:             { type: number, default: 8889 }
-      token:            { type: string, required: true }
-      adom_id:          { type: string, default: "1" }
-      backup_category:  { type: string, required: true, description: "Backup category bucket (SYSTEM / ADOM / DB / ...)." }
+      adom_id:          { type: string, default: "330201025894400" }
+      backup_category:  { type: string, required: true, description: "SYSTEM_BACKUP | DATABASE_BACKUP (live-verified). Other categories return 400." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/backup/{args.backup_category}"
+      url: "https://{args.host}/api/v3/backup/{args.backup_category}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [BackupFile{ name, size, createdAt, category, ... }] }"
+    returns: "{ result: [{ adomId, fileName, version }] }"
 
   list_remote_backup_settings:
-    description: "All configured remote backup destinations (SCP/SFTP/etc.)."
+    description: "Remote backup destinations (SCP/SFTP/etc.) and the timeout config."
     protocol: http
     parameters:
-      host:  { type: string, required: true }
-      port:  { type: number, default: 8889 }
-      token: { type: string, required: true }
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/backup/remote-settings"
+      url: "https://{args.host}/api/v3/backup/remote-settings"
       headers:
-        Authorization: "{args.token}"
+        AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [RemoteSetting{ id, name, host, protocol, ... }] }"
+    returns: "{ result: { remoteTimeout, remoteSettingsDtoList: [{ id, name, host, protocol, ... }], lastModifiedTime, lastModifiedBy } }"
 
   backup_and_clean:
     description: |
-      Run a backup and clean older files in one step. Returns when the
-      backup completes. `retention_days` is the cutoff for cleanup.
+      Run a backup and clean older files in one step. `retention_days`
+      is the cutoff for cleanup; `backup_storage` is the storage key
+      (LOCAL or a remote setting name).
     destructive: true
     protocol: http
     parameters:
       host:            { type: string, required: true }
-      port:            { type: number, default: 8889 }
-      token:           { type: string, required: true }
-      adom_id:         { type: string, default: "1" }
+      adom_id:         { type: string, default: "330201025894400" }
       retention_days:  { type: number, required: true, description: "Files older than this are removed." }
       backup_storage:  { type: string, required: true, description: "Storage destination key (LOCAL / remote setting name)." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/backup/perform-and-clean?fileRetentionDays={args.retention_days}&backupStorage={args.backup_storage}"
+      url: "https://{args.host}/api/v3/backup/perform-and-clean?fileRetentionDays={args.retention_days}&backupStorage={args.backup_storage}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result: { backupFile, removedCount } }"
 
   db_backup_and_clean:
-    description: "Backup the database only, then clean older DB backups."
+    description: |
+      Backup the database only, then clean older DB backups. Per spec
+      this endpoint takes ONLY fileRetentionDays (no backupStorage, no
+      AdomId).
     destructive: true
     protocol: http
     parameters:
       host:            { type: string, required: true }
-      port:            { type: number, default: 8889 }
-      token:           { type: string, required: true }
-      adom_id:         { type: string, default: "1" }
       retention_days:  { type: number, required: true }
-      backup_storage:  { type: string, required: true }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/backup/db/backup?fileRetentionDays={args.retention_days}&backupStorage={args.backup_storage}"
+      url: "https://{args.host}/api/v3/backup/db/backup?fileRetentionDays={args.retention_days}"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result }"
 
   restore_backup:
     description: |
       Restore a backup file by name within the given category. Highly
-      destructive — overwrites current configuration / DB.
+      destructive — overwrites current configuration / DB. Use the
+      live-verified categories (SYSTEM_BACKUP / DATABASE_BACKUP).
     destructive: true
     protocol: http
     parameters:
       host:             { type: string, required: true }
-      port:             { type: number, default: 8889 }
-      token:            { type: string, required: true }
-      adom_id:          { type: string, default: "1" }
-      backup_category:  { type: string, required: true, description: "SYSTEM / ADOM / DB / ..." }
-      file_name:        { type: string, required: true, description: "Backup file name to restore." }
+      adom_id:          { type: string, default: "330201025894400" }
+      backup_category:  { type: string, required: true, description: "SYSTEM_BACKUP | DATABASE_BACKUP." }
+      file_name:        { type: string, required: true, description: "Backup file name to restore (from list_backup_files)." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/restore/{args.backup_category}?fileName={args.file_name}"
+      url: "https://{args.host}/api/v3/restore/{args.backup_category}?fileName={args.file_name}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result }"
@@ -1249,18 +1097,15 @@ tools:
   # ─────────── Policy Package ───────────
 
   list_policy_packages:
-    description: "List all policy packages in the ADOM. Policy packages bundle policies for deployment."
+    description: "List all policy packages in the ADOM. Empty installs return []."
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-package"
+      url: "https://{args.host}/api/v3/policy-package"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [PolicyPackageVo{ id, name, rank, blockIds, assignedCampuses, ... }] }"
@@ -1270,15 +1115,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Policy package id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-package/{args.id}/assignments"
+      url: "https://{args.host}/api/v3/policy-package/{args.id}/assignments"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [{ campusId, deviceId, assignedAt, ... }] }"
@@ -1288,15 +1130,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Policy package id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-package/{args.id}/revisions"
+      url: "https://{args.host}/api/v3/policy-package/{args.id}/revisions"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [Revision{ id, createdAt, createdBy, comment, ... }] }"
@@ -1306,15 +1145,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Policy package id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-package/{args.id}/revisions/current"
+      url: "https://{args.host}/api/v3/policy-package/{args.id}/revisions/current"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: Revision }"
@@ -1325,16 +1161,13 @@ tools:
     protocol: http
     parameters:
       host:        { type: string, required: true }
-      port:        { type: number, default: 8889 }
-      token:       { type: string, required: true }
-      adom_id:     { type: string, default: "1" }
+      adom_id:     { type: string, default: "330201025894400" }
       id:          { type: string, required: true, description: "Policy package id." }
       revision_id: { type: string, required: true, description: "Target revision id." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/policy-package/{args.id}/restore/{args.revision_id}"
+      url: "https://{args.host}/api/v3/policy-package/{args.id}/restore/{args.revision_id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message, result }"
@@ -1345,15 +1178,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Policy package id." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/policy-package/{args.id}"
+      url: "https://{args.host}/api/v3/policy-package/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message }"
@@ -1365,14 +1195,11 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-block"
+      url: "https://{args.host}/api/v3/policy-block"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [PolicyBlockVo{ id, name, rank, rules, ... }] }"
@@ -1382,153 +1209,118 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Policy block id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-block/{args.id}"
+      url: "https://{args.host}/api/v3/policy-block/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: PolicyBlockVo }"
 
   list_blocks_by_package:
-    description: "Blocks included in a specific Policy Package (in evaluation order)."
+    description: "Blocks included in a specific Policy Package. `type` filter optional."
     protocol: http
     parameters:
-      host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
-      package_id: { type: string, required: true, description: "Policy package id." }
+      host:        { type: string, required: true }
+      adom_id:     { type: string, default: "330201025894400" }
+      package_id:  { type: string, required: true, description: "Policy package id." }
+      block_type:  { type: string, default: "", description: "Optional block type filter." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/policy-block/policy-package/{args.package_id}"
+      url: "https://{args.host}/api/v3/policy-block/policy-package/{args.package_id}?type={args.block_type}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [PolicyBlockVo] }"
 
   # ─────────── Scheduler ───────────
-
-  list_schedules:
-    description: |
-      List all scheduled tasks. `task_type` filter narrows by category
-      (e.g. backup, firmware-push, scan); `runs_on_ncm=true` shows only
-      NCM-side schedules vs ones delegated to managed Campuses.
-    protocol: http
-    parameters:
-      host:        { type: string, required: true }
-      port:        { type: number, default: 8889 }
-      token:       { type: string, required: true }
-      adom_id:     { type: string, default: "1" }
-      runs_on_ncm: { type: boolean, default: false }
-      task_type:   { type: string, default: "" }
-    request:
-      method: GET
-      url: "https://{args.host}:{args.port}/api/v3/schedules?runsOnNCM={args.runs_on_ncm}&taskType={args.task_type}"
-      headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
-        Accept: "application/json"
-    returns: "{ result: [Schedule{ id, name, cron, taskType, enabled, lastRun, nextRun, ... }] }"
+  # list_schedules returned 500 on live NCM v8.0 (see BROKEN-APIS.md).
+  # Schedule MUTATION endpoints are kept — they target known ids and
+  # should still work once you have ids from another source (e.g. GUI).
 
   get_schedule:
-    description: "Get one schedule by id."
+    description: "Get one schedule by id. No AdomId required."
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
-      id:      { type: string, required: true, description: "Schedule id." }
+      host: { type: string, required: true }
+      id:   { type: string, required: true, description: "Schedule id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/schedules/{args.id}"
+      url: "https://{args.host}/api/v3/schedules/{args.id}"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: Schedule }"
 
   list_schedule_activity_types:
-    description: "All schedule activity / task type strings the server supports — discover before creating a new schedule."
+    description: |
+      All schedule activity / task type strings the server supports —
+      discover before creating a new schedule. Returns rich metadata:
+      taskType, tag (SYSTEM/USER/etc), display name, disabled flag.
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      host:        { type: string, required: true }
+      adom_id:     { type: string, default: "330201025894400" }
+      runs_on_ncm: { type: boolean, default: false }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/schedules/activity-types"
+      url: "https://{args.host}/api/v3/schedules/activity-types?runsOnNCM={args.runs_on_ncm}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [string] }"
+    returns: "{ result: [{ taskType, tag, name, disabled, groupType }] }"
 
   run_schedule_now:
-    description: "Trigger a scheduled task immediately, regardless of its cron. `ids_json` is `[<id>,<id>...]`."
+    description: |
+      Trigger scheduled tasks immediately. `ids_json` is a JSON array
+      of schedule ids, e.g. `[123,456]`. `wait=true` blocks until done.
+      No AdomId required.
     destructive: true
     protocol: http
     parameters:
       host:     { type: string, required: true }
-      port:     { type: number, default: 8889 }
-      token:    { type: string, required: true }
-      adom_id:  { type: string, default: "1" }
       ids_json: { type: string, required: true, description: "JSON array of schedule ids, e.g. '[123,456]'." }
+      wait:     { type: boolean, default: false, description: "Block until tasks complete." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/schedules/runNow"
+      url: "https://{args.host}/api/v3/schedules/runNow?wait={args.wait}"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
       body: "{args.ids_json}"
     returns: "{ code, message, result }"
 
   enable_schedules:
-    description: "Enable one or more schedules (CSV of ids)."
+    description: "Enable schedules. `ids_json` is a JSON array of schedule ids — body, not query. No AdomId."
     destructive: true
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
-      ids:     { type: string, required: true, description: "Comma-separated schedule ids." }
+      host:     { type: string, required: true }
+      ids_json: { type: string, required: true, description: "JSON array of ids, e.g. '[123,456]'." }
     request:
       method: PUT
-      url: "https://{args.host}:{args.port}/api/v3/schedules/enable?ids={args.ids}"
+      url: "https://{args.host}/api/v3/schedules/enable"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.ids_json}"
     returns: "{ code, message }"
 
   disable_schedules:
-    description: "Disable one or more schedules (CSV of ids)."
+    description: "Disable schedules. `ids_json` is a JSON array. No AdomId."
     destructive: true
     protocol: http
     parameters:
-      host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
-      ids:     { type: string, required: true, description: "Comma-separated schedule ids." }
+      host:     { type: string, required: true }
+      ids_json: { type: string, required: true, description: "JSON array of ids." }
     request:
       method: PUT
-      url: "https://{args.host}:{args.port}/api/v3/schedules/disable?ids={args.ids}"
+      url: "https://{args.host}/api/v3/schedules/disable"
       headers:
-        Authorization: "{args.token}"
-        AdomId: "{args.adom_id}"
         Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.ids_json}"
     returns: "{ code, message }"
 
   # ─────────── Network Devices (managed switches/APs in inventory) ───────────
@@ -1538,14 +1330,11 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/network-device"
+      url: "https://{args.host}/api/v3/network-device"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: [NetworkDeviceDto{ id, name, ip, model, vendor, status, ... }] }"
@@ -1555,15 +1344,12 @@ tools:
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       id:      { type: string, required: true, description: "Network device id." }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/network-device/{args.id}"
+      url: "https://{args.host}/api/v3/network-device/{args.id}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ result: NetworkDeviceDto }"
@@ -1574,15 +1360,31 @@ tools:
     protocol: http
     parameters:
       host:        { type: string, required: true }
-      port:        { type: number, default: 8889 }
-      token:       { type: string, required: true }
-      adom_id:     { type: string, default: "1" }
+      adom_id:     { type: string, default: "330201025894400" }
       device_json: { type: string, required: true, description: "NetworkDeviceDto JSON." }
     request:
       method: POST
-      url: "https://{args.host}:{args.port}/api/v3/network-device"
+      url: "https://{args.host}/api/v3/network-device"
       headers:
-        Authorization: "{args.token}"
+        AdomId: "{args.adom_id}"
+        Accept: "application/json"
+        Content-Type: "application/json"
+      body: "{args.device_json}"
+    returns: "{ code, message, result: NetworkDeviceDto }"
+
+  update_network_device:
+    description: "Update one Network Device (full replace). Read get_network_device first."
+    destructive: true
+    protocol: http
+    parameters:
+      host:        { type: string, required: true }
+      adom_id:     { type: string, default: "330201025894400" }
+      id:          { type: string, required: true, description: "Network device id." }
+      device_json: { type: string, required: true, description: "Full NetworkDeviceDto JSON." }
+    request:
+      method: PUT
+      url: "https://{args.host}/api/v3/network-device/{args.id}"
+      headers:
         AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
@@ -1590,37 +1392,35 @@ tools:
     returns: "{ code, message, result: NetworkDeviceDto }"
 
   delete_network_devices:
-    description: "Delete Network Devices by id (CSV). Destructive."
+    description: "Delete Network Devices by id (CSV via `ids` query param)."
     destructive: true
     protocol: http
     parameters:
       host:    { type: string, required: true }
-      port:    { type: number, default: 8889 }
-      token:   { type: string, required: true }
-      adom_id: { type: string, default: "1" }
+      adom_id: { type: string, default: "330201025894400" }
       ids:     { type: string, required: true, description: "Comma-separated network device ids." }
     request:
       method: DELETE
-      url: "https://{args.host}:{args.port}/api/v3/network-device?ids={args.ids}"
+      url: "https://{args.host}/api/v3/network-device?ids={args.ids}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
     returns: "{ code, message }"
 
   # ─────────── Endpoint Fingerprint ───────────
+  # NOTE: count endpoint returns 400 for every count_type tried on
+  # live NCM v8.0 — dropped from typed tools. See BROKEN-APIS.md.
 
   list_endpoint_fingerprints:
     description: |
       List Endpoint Fingerprint records — NCM's catalogue of device
-      signatures used to classify managed endpoints. Filter via the
-      single `filter` arg; for compound filters use call_api.
+      signatures used to classify managed endpoints. Live response
+      uses `results[]` (plural). Filter via the single `filter` arg;
+      for compound filters use call_api.
     protocol: http
     parameters:
       host:           { type: string, required: true }
-      port:           { type: number, default: 8889 }
-      token:          { type: string, required: true }
-      adom_id:        { type: string, default: "1" }
+      adom_id:        { type: string, default: "330201025894400" }
       campus_id_list: { type: string, default: "" }
       filter:         { type: string, default: "" }
       start:          { type: number, default: 0 }
@@ -1629,30 +1429,60 @@ tools:
       sort_dir:       { type: string, default: "asc" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/endpoint-fingerprint/list?campusIdList={args.campus_id_list}&filter={args.filter}&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}"
+      url: "https://{args.host}/api/v3/endpoint-fingerprint/list?campusIdList={args.campus_id_list}&filter={args.filter}&start={args.start}&count={args.count}&sortKey={args.sort_key}&sortDir={args.sort_dir}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: { records: [Fingerprint{ id, signature, classification, ... }], total } }"
+    returns: "{ results: [Fingerprint], total, filtered, totalPages, hasNext, pageIndex }"
 
-  count_endpoint_fingerprints:
-    description: "Counts of Endpoint Fingerprint records grouped by `countType`."
+  # ─────────── Dashboard (high-value reads) ───────────
+  # Most dashboard endpoints use no AdomId; list_dashboards uses
+  # the lowercase `adomId` header (spec quirk).
+
+  list_dashboards:
+    description: |
+      List saved dashboards visible to the current admin. Spec uses
+      lowercase `adomId` header (yes, lowercase a — a one-off quirk).
+      Empty installs return [].
     protocol: http
     parameters:
-      host:       { type: string, required: true }
-      port:       { type: number, default: 8889 }
-      token:      { type: string, required: true }
-      adom_id:    { type: string, default: "1" }
-      count_type: { type: string, required: true, description: "Bucket type (discover via GUI)." }
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
     request:
       method: GET
-      url: "https://{args.host}:{args.port}/api/v3/endpoint-fingerprint/count/{args.count_type}"
+      url: "https://{args.host}/api/v3/dashboard/list"
       headers:
-        Authorization: "{args.token}"
+        adomId: "{args.adom_id}"
+        Accept: "application/json"
+    returns: "{ result: [Dashboard{ id, name, widgets, ... }] }"
+
+  get_dashboard_system_info:
+    description: "High-level system info widget — hostname, serial, serviceType (FortiNAC-M), version, systemTime, upTime, license."
+    protocol: http
+    parameters:
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/dashboard/system-info"
+      headers:
         AdomId: "{args.adom_id}"
         Accept: "application/json"
-    returns: "{ result: [{ bucket, count }] }"
+    returns: "{ result: { hostName, serial, serviceType, version, systemTime, upTime, totalLicenseCount, ... } }"
+
+  get_dashboard_system_performance:
+    description: "Current system perf metrics — cpuUsage, memoryUsage, diskUsage (percentages)."
+    protocol: http
+    parameters:
+      host:    { type: string, required: true }
+      adom_id: { type: string, default: "330201025894400" }
+    request:
+      method: GET
+      url: "https://{args.host}/api/v3/dashboard/system-performance"
+      headers:
+        AdomId: "{args.adom_id}"
+        Accept: "application/json"
+    returns: "{ result: { cpuUsage: int, memoryUsage: int, diskUsage: int } }"
 
   # ─────────── Generic escape hatch ───────────
 
@@ -1662,36 +1492,34 @@ tools:
       fits and the OpenAPI schema (1062 endpoints) shows one for your
       need.
 
-      ALL endpoints live under /api/v3/<path> (a handful are under
-      /api/v2/*, like the login endpoint). Pass `path` WITH the
-      leading slash and WITHOUT the base URL.
+      ALL endpoints live under /api/v3/<path>.
+      Pass `path` WITH the leading slash and WITHOUT the base URL.
       Examples:
         path: "/api/v3/ncm/cluster/nodes"
         path: "/api/v3/host/list"
         path: "/api/v3/policy-package/{id}"
 
-      Auth (Authorization: <token>) is auto-applied; you only pass
-      `token`. Many endpoints also need an `AdomId` header — pass
-      `adom_id` to set it. method defaults to GET; for POST/PUT, set
-      `body_json` (and Content-Type is added automatically).
+      Auth (the Authorization header) is auto-applied by Forge's
+      connector-level bearer-token-exchange — you do NOT pass a token.
+      Many endpoints also need an `AdomId` header — pass `adom_id` to
+      set it (harmless to set on endpoints that ignore it). method
+      defaults to GET; for POST/PUT/DELETE-with-body, set `body_json`.
+      Content-Type is added automatically.
 
       Skip this tool if a specific typed tool exists — typed tools
       have better parameter docs and clearer return shapes.
     protocol: http
     parameters:
       host:         { type: string, required: true }
-      port:         { type: number, default: 8889 }
-      token:        { type: string, required: true }
-      adom_id:      { type: string, default: "1", description: "AdomId header (most endpoints need it; some don't — value is still safe to send)." }
+      adom_id:      { type: string, default: "330201025894400", description: "AdomId header (most endpoints need it; some don't — value is still safe to send)." }
       path:         { type: string, required: true, description: "Full path including /api/v3/ prefix and leading slash, e.g. '/api/v3/ncm/cluster/nodes'." }
       method:       { type: string, default: "GET", description: "GET | POST | PUT | DELETE." }
       query_params: { type: string, default: "", description: "Query string fragment (no leading ?). E.g. 'start=0&count=10&filter=name%3D%3Dfoo'." }
-      body_json:    { type: string, default: "", description: "JSON body for POST/PUT (string-encoded)." }
+      body_json:    { type: string, default: "", description: "JSON body for POST/PUT/DELETE (string-encoded)." }
     request:
       method: "{args.method}"
-      url: "https://{args.host}:{args.port}{args.path}?{args.query_params}"
+      url: "https://{args.host}{args.path}?{args.query_params}"
       headers:
-        Authorization: "{args.token}"
         AdomId: "{args.adom_id}"
         Accept: "application/json"
         Content-Type: "application/json"
