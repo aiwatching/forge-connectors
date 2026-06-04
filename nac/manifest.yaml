@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.5"
+version: "0.12.6"
 author: forge
 category: connector
 mode: server-side
@@ -798,6 +798,34 @@ tools:
 
       Skip this tool if a specific typed tool exists — typed tools have
       better parameter docs and clearer return shapes.
+
+      ── COMMON FOOTGUNS (verified against fnac-rest-schema-7.6.json) ──
+
+      Creating an ADMIN user:
+        ✗ POST /user                    — that's the END-USER (host) endpoint;
+                                          adminUser:true is IGNORED, password
+                                          gets validated against the strict
+                                          host password policy → 409 "supplied
+                                          password is not valid" even for
+                                          strong passwords. DO NOT use this for
+                                          admins.
+        ✓ POST /user/admin              (operationId: addNewAdmin)
+              body: { userName: "...", password: "...", profile: 1, ... }
+          Required: userName.  Profile 1 = Full Admin on fresh installs.
+          See AddAdminUserRequest schema for optional fields (email,
+          firstName/lastName, restAPIUser, mfaMethod, neverExpires, etc).
+        Set password later if needed: POST /user/set-password.
+
+      Field name catches:
+        - User identifier on POST /user/admin is `userName`, NOT `userID`.
+        - Admin profile id field is `profile` (integer), NOT `adminProfileId`.
+        - Password field is `password` (not `passwd` / `userPassword`).
+
+      Anti-retry rule: if a POST returns 409 with a vague message
+      ("not valid", "policy"…) and no specific field name in it, DO NOT
+      retry blindly with different values. Stop, tell the user the
+      server rejected it, and ask them to verify the endpoint / policy
+      in the NAC UI.
     protocol: http
     parameters:
       host:         { type: string, required: true }

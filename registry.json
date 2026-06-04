@@ -6,7 +6,7 @@
       "id": "nac",
       "name": "FortiNAC Device",
       "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.12.5",
+      "version": "0.12.6",
       "author": "forge",
       "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (72 tools). v0.12 adds 5 group writes: add/remove devices to/from a group, copy group, update GroupDto, delete group. For host/port/user groups use call_api with system/group/add-members (needs type byte). v0.12.1: call_api preserves slashes in path (url_encoding: none) + leaves out empty body so GET works with default body_json=\"\". v0.12.2: list_hosts moves optional query params (filters, start, count, sortKey, sortDir) from URL template into spec.query \u2014 Forge drops unset filters cleanly so LLM omitting filter no longer 400s. v0.12.3: call_api description warns against ? in path; list_hosts notes large-scan 500 workaround. v0.12.4: run_command exposes timeout_sec arg (default 60s, bump for slow diagnose commands).",
       "min_forge_version": "0.9.17"
