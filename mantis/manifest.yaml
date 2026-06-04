@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.5"
+version: "0.26.6"
 author: forge
 category: connector
 mode: browser-side
@@ -342,14 +342,10 @@ tools:
 
       Use these dedicated params instead:
         - status         — by Mantis STATUS (workflow state: new / acknowledged /
-                           assigned / resolved / closed / ...). OMIT to return
-                           ALL statuses (Mantis has no native "open" status —
-                           that alias just expands to a 5-state combo). Pass
-                           it ONLY if user says "open" / "not closed" / "still
-                           active" / specifies an explicit state. NOT for
-                           "resolution=open" — the Mantis Resolution field
-                           has its own values (open / reopened / fixed / ...) —
-                           those go in the `resolution` arg below.
+                           assigned / resolved / closed / ...). NOT for
+                           "resolution=open". The Mantis Resolution field has
+                           its own values (open / reopened / fixed / ...) — for
+                           those use the `resolution` arg below.
         - resolution     — by Mantis RESOLUTION field. Values include
                            open / reopened / fixed / wont_fix / duplicate / ...
                            If the user says "resolution is open" or "open or
@@ -387,20 +383,15 @@ tools:
         required: false
       status:
         type: string
-        description: "Mantis STATUS filter (workflow state). OMIT to return ALL statuses (Mantis has no native 'open' state; the closest is a 5-status combo via the 'open' alias). NOT for resolution=open (use `resolution` arg)."
+        description: "Mantis status name, comma list, 'open' (all <80), or 'all' (no filter). NOT for resolution=open (use `resolution` arg)."
         label: |
-          Status filter — comma list of Mantis status names. OMIT this
-          arg to skip the filter (return everything). Valid names:
+          Status filter. Accepts a single name or comma list:
             new, feedback, acknowledged, confirmed, assigned,
             resolved, closed, reopened.
-          Aliases (resolved server-side):
-            "open" → new,feedback,acknowledged,confirmed,assigned
-                    (Mantis has no single "open" status — this is just
-                     shorthand for the 5 pre-resolved states)
-            "all"  → no filter (same as omitting)
-          DEFAULT: omitted (no filter). Pass "open" explicitly if the
-          user says "open" / "not closed" / "still active".
-        required: false
+          Aliases:
+            "open" → new,feedback,acknowledged,confirmed,assigned (everything <80)
+            "all"  → no filter
+        default: "open"
       project_id:
         type: number
         description: "Mantis internal numeric project id (from list_projects). Sets PHP-session current project."
@@ -567,10 +558,7 @@ tools:
       const OPEN_GROUP = ['new','feedback','acknowledged','confirmed','assigned'];
 
       function resolveStatuses(raw) {
-        // Default: no filter (empty array) — Mantis has no native "open"
-        // status, and applying a 5-status combo silently when the user
-        // didn't ask drops resolved/closed bugs they may want.
-        const v = String(raw || '').toLowerCase().trim();
+        const v = String(raw || 'open').toLowerCase().trim();
         if (v === 'all' || v === '') return [];
         if (v === 'open') return OPEN_GROUP.map(n => STATUS_IDS[n]);
         const names = v.split(',').map(s => s.trim()).filter(Boolean);
@@ -1489,7 +1477,7 @@ tools:
         scanned,
         pages_walked: pagesWalked,
         query: args.query || '',
-        status: args.status || '',
+        status: args.status || 'open',
         project_id: resolvedProjectId || (args.project_id || null),
         project_name: resolvedProjectName || (args.project_name || ''),
         fix_schedule: args.fix_schedule || '',
