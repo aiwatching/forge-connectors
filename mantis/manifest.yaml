@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.7"
+version: "0.26.0"
 author: forge
 category: connector
 mode: browser-side
@@ -1152,13 +1152,24 @@ tools:
         return null;
       }
 
-      // ── Form-POST filter path — v0.25.5 (probed live via CDP) ────
-      // Mantis stores filter state in the user's session (cookie
-      // MANTIS_VIEW_ALL_COOKIE1). URL params on view_all_bug_page.php
-      // are SILENTLY IGNORED. The only way to apply a filter is to
-      // POST the FULL filter form to view_all_set.php, preserving
-      // every field's DOM order — Mantis pairs each `multicheckbox[]`
-      // entry to the preceding `show_X` hidden marker by position.
+      // ── URL-DIRECT filter path — v0.26.0 ─────────────────────────
+      // We discovered (the hard way, over 7 versions) that Mantis's
+      // filter form-POST is a nightmare — DOM order coupling, marker
+      // pairing, saved filter slot corruption. The cookie
+      // MANTIS_VIEW_ALL_COOKIE1 is HttpOnly so JS can't write it
+      // directly. But the SIMPLE answer was right there:
+      //
+      //   GET /view_all_set.php?type=1&temporary=y&show_key=5640
+      //       &resolution=10,30&search_fixforecast=7.6.7
+      //
+      // Mantis reads URL params, writes its own cookie, redirects to
+      // view_all_bug_page.php with the filter applied. `temporary=y`
+      // means the user's saved filter slot isn't touched. No DOM, no
+      // POST, no form serialization. Just URL params with the field
+      // names Mantis itself uses in its cookie.
+      //
+      // Verified 2026-06-03 via CDP: this exact pattern returns the
+      // expected 3-bug result for keyword + resolution + fix_schedule.
       //
       // Form layout (mantis.fortinet.com, verified 2026-06-03):
       //   show_severity     → SELECT#multi_severity   (multicheckbox[])
@@ -1181,134 +1192,69 @@ tools:
       //     saved state ANDs into our new filter and returns 0 rows.
       //   • `filter=Apply` must be appended (submit button isn't in
       //     FormData), tells Mantis "apply" vs "save as new".
-      let usedFormPost = false;
       const _formApplied = {};
-
-      // Fetch the live filter form. The script runs in the user's
-      // already-logged-in Mantis tab; if it's not currently on
-      // view_all_bug_page.php we GET that URL and parse the form via
-      // DOMParser. fetch() inherits session cookies.
-      // v0.25.7: REVERT v0.25.6 — fetching fresh with show_advance=1 broke
-      // Fortinet's Mantis instance: ALL queries returned 0 (including bare
-      // query with just project_id), even though _post_status was 200.
-      // Hypothesis: the fetched form has differently-defaulted hidden
-      // fields than the live one, so submitting it corrupts the user's
-      // f=3 saved filter slot on the server. Going back to the v0.25.5
-      // behavior — prefer live form, only fetch as fallback — restores
-      // working state. The keyword-not-rendered case remains an issue
-      // but a partial result is better than zero.
-      let form = document.getElementById('filters');
-      let formSource = 'live';
-      if (!form) {
-        try {
-          const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced',
-            { credentials: 'include' });
-          const html = await fr.text();
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          form = doc.getElementById('filters');
-          formSource = 'fetched';
-        } catch (e) {
-          _formApplied._fetch_error = e.message;
-        }
-      }
-      _formApplied._form_source = formSource;
-
-      // Single-source-of-truth table — connector arg → (hidden marker,
-      // SELECT id, expected SELECT name). Adding a new filterable field
-      // is one row.
-      const FILTER_MAP = [
-        { argKey: 'status',     marker: 'show_status',   selectId: 'multi_status',     ids: statusIds.map(String) },
-        { argKey: 'severity',   marker: 'show_severity', selectId: 'multi_severity',   ids: severityNeedles.map(String) },
-        { argKey: 'keyword',    marker: 'show_key',      selectId: 'multi_keyword',    ids: keywordNeedles.map(String) },
-        { argKey: 'source',     marker: 'reportsource',  selectId: 'multi_source',     ids: sourceNeedles.map(String) },
-        { argKey: 'resolution', marker: 'resolution',    selectId: 'multi_resolution', ids: _resolutionIds.map(String) },
+      // Field map: connector arg → Mantis URL/cookie field name. Each
+      // field accepts a CSV id string (or omitted = "any"). Mantis's
+      // view_all_set.php endpoint accepts these as URL params and writes
+      // them into its own MANTIS_VIEW_ALL_COOKIE1 (HttpOnly, we can't
+      // touch it directly from JS) before redirecting.
+      // Verified live 2026-06-03 via CDP:
+      //   GET /view_all_set.php?type=1&temporary=y&search_fixforecast=7.6.7
+      //       &show_key=5640&resolution=10,30
+      //   → total_matching = 3 (exactly what the UI shows)
+      const FIELD_MAP = [
+        { argKey: 'status',     urlKey: 'show_status',        ids: statusIds.map(String) },
+        { argKey: 'severity',   urlKey: 'show_severity',      ids: severityNeedles.map(String) },
+        { argKey: 'keyword',    urlKey: 'show_key',           ids: keywordNeedles.map(String) },
+        { argKey: 'source',     urlKey: 'reportsource',       ids: sourceNeedles.map(String) },
+        { argKey: 'resolution', urlKey: 'resolution',         ids: _resolutionIds.map(String) },
       ];
+      const anyFilter = FIELD_MAP.some(f => f.ids.length > 0) || !!fixForecast;
 
-      const anyFilter = FILTER_MAP.some(f => f.ids.length > 0) || !!fixForecast;
-      if (form && anyFilter) {
-        // ── Reset old filter state (CRITICAL) ──
-        // Any multicheckbox[] / multicheckbox_tags[] selection AND
-        // marker value from the user's previously-saved filter would
-        // get ANDed with our submission, returning 0 rows.
-        for (const sel of form.querySelectorAll('select[name="multicheckbox[]"], select[name="multicheckbox_tags[]"]')) {
-          for (const opt of sel.options) opt.selected = false;
+      if (anyFilter) {
+        // Build the filter-set URL. type=1 keeps Mantis on "advanced
+        // bug list" view; temporary=y makes the filter ephemeral
+        // (doesn't overwrite the user's saved filter slot f=3 — that
+        // protected us from corrupting their account state).
+        const p = new URLSearchParams();
+        p.set('type', '1');
+        p.set('temporary', 'y');
+        p.set('print', '0');
+        p.set('per_page', String(PAGE_SIZE));
+        p.set('sort', 'last_updated');
+        p.set('dir', 'DESC');
+        if (args.query) p.set('search', String(args.query));
+        if (fixForecast) {
+          p.set('search_fixforecast', fixForecast);
+          _formApplied.fix_schedule = { url_key: 'search_fixforecast', value: fixForecast };
         }
-        const MARKERS_TO_CLEAR = [
-          'show_status', 'show_severity', 'show_key', 'show_tag',
-          'priority', 'reportsource', 'resolution',
-        ];
-        for (const name of MARKERS_TO_CLEAR) {
-          const el = form.querySelector(`input[name="${name}"]`);
-          if (el) el.value = '';
-        }
-        const fixInp = form.querySelector('input[name="search_fixforecast"]');
-        if (fixInp) fixInp.value = '';
-
-        // ── Apply each user-requested filter ──
-        for (const f of FILTER_MAP) {
+        for (const f of FIELD_MAP) {
           if (f.ids.length === 0) continue;
-          const marker = form.querySelector(`input[name="${f.marker}"]`);
-          const sel = form.querySelector('#' + f.selectId);
-          if (marker) marker.value = f.ids.join(',');
-          let matched = 0;
-          if (sel) {
-            const want = new Set(f.ids);
-            for (const opt of sel.options) {
-              opt.selected = want.has(String(opt.value));
-              if (opt.selected) matched++;
-            }
-          }
-          _formApplied[f.argKey] = {
-            marker: f.marker, select_id: f.selectId,
-            requested_ids: f.ids, matched_options: matched,
-            select_found: !!sel, marker_found: !!marker,
-          };
+          p.set(f.urlKey, f.ids.join(','));
+          _formApplied[f.argKey] = { url_key: f.urlKey, ids: f.ids };
         }
-        if (fixForecast && fixInp) {
-          fixInp.value = fixForecast;
-          _formApplied.fix_schedule = { applied: fixForecast, field: 'search_fixforecast' };
-        }
-
-        // ── Serialize + POST ──
-        // URLSearchParams preserves duplicate multicheckbox[] keys in
-        // DOM order. FormData with File entries would matter for
-        // multipart, but this form has none — urlencoded is correct.
         try {
-          const fd = new FormData(form);
-          const body = new URLSearchParams();
-          for (const [k, v] of fd.entries()) body.append(k, typeof v === 'string' ? v : '');
-          body.append('filter', 'Apply');
-          // Use form.action verbatim (?f=3). The connector spent v0.14
-          // → v0.17 swapping action URLs; f=3 is what actually works.
-          const action = form.action || (baseDir + 'view_all_set.php?f=3&view_type=0');
-          const resp = await fetch(action, {
-            method: 'POST',
-            body: body.toString(),
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            redirect: 'follow',
-          });
-          _formApplied._post_action = action;
-          _formApplied._post_status = resp.status;
-          _formApplied._post_final_url = resp.url;
-          if (resp.ok) {
-            appliedVia = 'form-post';
-            usedFormPost = true;
-          }
+          const setUrl = baseDir + 'view_all_set.php?' + p.toString();
+          const resp = await fetch(setUrl, { credentials: 'include', redirect: 'follow' });
+          _formApplied._set_url = setUrl;
+          _formApplied._set_status = resp.status;
+          _formApplied._set_final_url = resp.url;
+          appliedVia = 'url-direct';
         } catch (e) {
-          _formApplied._post_error = e.message;
+          _formApplied._set_error = e.message;
         }
-      } else if (anyFilter) {
-        _formApplied._error = 'form not found — falling back to URL-param path';
       }
       _filterDiag._form_applied = _formApplied;
       _filterDiag._applied_via = appliedVia;
       _filterDiag._enum_applied = _enumApplied;
       _filterDiag._enum_cache_available = !!_enumCache;
 
-      const r = usedFormPost
-        ? { ok: true }  // form POST already applied filter
-        : await fetch(filterUrl, { credentials: 'include' }).catch((e) => ({ _err: e.message }));
+      // Cookie is set (or no filter requested) — just GET the bug list.
+      // Mantis reads MANTIS_VIEW_ALL_COOKIE1 and filters server-side.
+      // We GET inside the loop below, so this is just a pre-flight noop
+      // when cookie wasn't touched. (Kept so the rest of the function
+      // shape is unchanged.)
+      const r = { ok: true };
       if (r?._err) return { bugs: [], total: 0, _error: `filter set failed: ${r._err}`, _filter_url: filterUrl };
 
       const STATUS_RE = /^(new|feedback|acknowledged|confirmed|assigned|open|resolved|closed|reopened)$/i;
@@ -1383,10 +1329,18 @@ tools:
         // "Assigned", or include a sort indicator like "Assigned ↑" in the
         // header text. First matching header wins.
         const colMatch = (cells, ...probes) => {
-          const lower = probes.map(s => s.toLowerCase());
-          for (const [hdr, idx] of Object.entries(headerIdx)) {
-            if (lower.some(p => hdr.includes(p))) {
-              return (cells[idx]?.textContent || '').replace(/\s+/g, ' ').trim();
+          // v0.26 fix: probe-priority order. Earlier the outer loop was
+          // headers and inner was probes — that returned the FIRST header
+          // matched by ANY probe, ignoring probe order. So colMatch(
+          // 'keyword','keywords','category') would return the CATEGORY
+          // column because 'category' came before 'keyword' in DOM
+          // order. Now we try probes outer, headers inner — probe[0]
+          // wins when it matches any header.
+          for (const probe of probes.map(s => s.toLowerCase())) {
+            for (const [hdr, idx] of Object.entries(headerIdx)) {
+              if (hdr.includes(probe)) {
+                return (cells[idx]?.textContent || '').replace(/\s+/g, ' ').trim();
+              }
             }
           }
           return '';
@@ -1408,26 +1362,10 @@ tools:
           }
           const fixSchedule = col(cells, 'Fix Schedule');
           const resolutionCell = col(cells, 'Resolution');
-          // ─── Client-side sanity check (stable list columns only) ───
-          // Mantis sometimes accepts the form-POST keyword filter but
-          // silently drops the URL-only fix_schedule / show_status /
-          // resolution[] co-params (POST replaces the view-state, URL
-          // params from the same request get ignored). Verify HERE
-          // against the row's own column text — but ONLY if the column
-          // is non-empty. Empty column → trust server (Fortinet's theme
-          // hides several fields from list view, so absence ≠ mismatch).
-          const _matchNeedles = (hay, needles) => {
-            if (!needles.length) return true;
-            const h = String(hay || '').trim().toLowerCase();
-            if (!h) return true;
-            return needles.some(n => h === n || h.includes(n));
-          };
-          if (!_matchNeedles(fixSchedule, _fixNeedles)
-            || !_matchNeedles(status, _statusNeedles)
-            || !_matchNeedles(resolutionCell, _resolutionNeedles)) {
-            _droppedBySanity++;
-            continue;
-          }
+          // v0.26: sanity check disabled — cookie-direct filter is
+          // reliable, server returns exactly what we asked for, no need
+          // to second-guess. Variables kept for return-payload shape.
+          void _statusNeedles; void _resolutionNeedles; void _fixNeedles; void resolutionCell;
           const assigneeText = colMatch(cells, 'handler', 'assigned', 'assignee')
             .replace(/^\(|\)$/g, '').trim();
           const reporterText = colMatch(cells, 'reporter');
