@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.3"
+version: "0.26.4"
 author: forge
 category: connector
 mode: browser-side
@@ -1244,7 +1244,10 @@ tools:
         { argKey: 'source',     urlKey: 'reportsource',       ids: sourceNeedles.map(String) },
         { argKey: 'resolution', urlKey: 'resolution',         ids: _resolutionIds.map(String) },
       ];
-      const anyFilter = FIELD_MAP.some(f => f.ids.length > 0) || !!fixForecast;
+      const anyFilter = FIELD_MAP.some(f => f.ids.length > 0)
+                     || !!fixForecast
+                     || !!handlerId || !!reporterId || !!qaAssigneeId
+                     || !!args.query;
 
       if (anyFilter) {
         // Build the filter-set URL. type=1 keeps Mantis on "advanced
@@ -1262,6 +1265,22 @@ tools:
         if (fixForecast) {
           p.set('search_fixforecast', fixForecast);
           _formApplied.fix_schedule = { url_key: 'search_fixforecast', value: fixForecast };
+        }
+        // User filters — handler_id / reporter_id / qa_assignee_id are
+        // resolved earlier (line 605-607) via the handler_id dropdown DOM.
+        // They were missing from the URL-direct URL builder before v0.26.3,
+        // causing assignee= / reporter= / qa_assignee= to be silently dropped.
+        if (handlerId) {
+          p.set('handler_id', handlerId);
+          _formApplied.assignee = { url_key: 'handler_id', value: handlerId, original: args.assignee };
+        }
+        if (reporterId) {
+          p.set('reporter_id', reporterId);
+          _formApplied.reporter = { url_key: 'reporter_id', value: reporterId, original: args.reporter };
+        }
+        if (qaAssigneeId) {
+          p.set('qa_assignee_id', qaAssigneeId);
+          _formApplied.qa_assignee = { url_key: 'qa_assignee_id', value: qaAssigneeId, original: args.qa_assignee };
         }
         for (const f of FIELD_MAP) {
           if (f.ids.length === 0) continue;
