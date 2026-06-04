@@ -1,7 +1,7 @@
 id: tp
 name: FortiNAC Test Platform
 icon: 🧪
-version: "0.7.1"
+version: "0.7.2"
 author: forge
 category: connector
 mode: browser-side
@@ -50,6 +50,13 @@ description: |
     `::` for the final TestClass/test_method leaf. Adds `search`
     param for substring filter (so the LLM can grep e.g.
     `_01_administrators` without dumping the whole 500KB tree).
+
+catalog_summary: |
+  FortiNAC Test Platform (browser-runner, reuses logged-in JWT). NFR
+  read/edit + weekly status + comments. Automation (v2 pytest API):
+  list versions/labs/testcases, run_pytest, poll execution status,
+  fetch results, lab lock/kill. get_lab_devices to find a lab's NAC
+  IP for cross-connector handoff. 17 tools.
 
 settings:
   base_url:

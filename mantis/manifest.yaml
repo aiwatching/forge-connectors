@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.2"
+version: "0.26.3"
 author: forge
 category: connector
 mode: browser-side
@@ -21,6 +21,13 @@ description: |
   (bug_view_page.php?bug_id=N). Column layout in #bug_list varies per
   instance (Mantis "Manage Columns"); scripts build a header → index map
   at runtime instead of hardcoding cell positions.
+
+catalog_summary: |
+  MantisBT bug tracker (browser-runner, uses your logged-in session).
+  Search bugs by keyword / source / severity / resolution / fix-schedule
+  with server-side filtering. Read bug detail (description, notes,
+  attachments), download attachments, post bugnotes, list projects,
+  refresh the keyword/status/resolution enum cache. 9 tools.
 
 settings:
   base_url:

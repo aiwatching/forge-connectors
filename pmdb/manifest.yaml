@@ -1,7 +1,7 @@
 id: pmdb
 name: PMDB
 icon: "🏭"
-version: "0.3.0"
+version: "0.3.1"
 author: forge
 category: connector
 mode: browser-side
@@ -16,6 +16,12 @@ description: |
 
   Selectors verified on https://pmdb.Forge.com/Hardware/list and
   /Hardware/PRD/1871 via chrome-devtools-mcp on 2026-05-16.
+
+catalog_summary: |
+  PMDB (Product Management Database) — read-only DOM extraction
+  via the user's logged-in browser session. List hardware PRDs with
+  client-side filter, read PRD detail (metadata + revision history).
+  Useful for cross-referencing product / revision when triaging bugs.
 
 settings:
   base_url:

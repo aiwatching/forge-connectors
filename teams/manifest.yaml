@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.0"
+version: "0.9.1"
 author: forge
 category: connector
 mode: browser-side
@@ -22,6 +22,12 @@ description: |
   Selectors verified on teams.microsoft.com/v2/ via chrome-devtools-mcp.
   Microsoft rotates Fluent UI hooks — when extraction starts returning
   empty, re-probe and bump this manifest.
+
+catalog_summary: |
+  Microsoft Teams web client (browser-runner, isolated CSP world).
+  Read messages from channels, group chats, and 1:1 DMs; list channels
+  + recent chats; open a chat by display name; send messages to any
+  chat by name (creates new DM if needed). Pure DOM extraction.
 
 settings:
   base_url:

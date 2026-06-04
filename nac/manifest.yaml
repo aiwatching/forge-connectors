@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.4"
+version: "0.12.5"
 author: forge
 category: connector
 mode: server-side
@@ -42,6 +42,13 @@ description: |
     4. Sessions expire ~30 min idle. Re-login if a long run needs more.
        FortiNAC v7.6 has no long-lived API-user concept (unlike
        FortiGate), so login-once-per-run is the canonical pattern.
+
+catalog_summary: |
+  FortiNAC appliance — SSH/CLI + REST API combined (server-side).
+  Per-call `host` arg, credentials from settings. CLI: upgrade,
+  get_version, run_command, reboot. REST: host/port/user/group
+  management, member add/remove, device scanning, policy evaluation,
+  inventory queries, events. 73 tools across two protocols.
 
 settings:
   port:
