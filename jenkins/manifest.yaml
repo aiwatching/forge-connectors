@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.5"
+version: "0.1.6"
 author: forge
 category: connector
 mode: server-side
@@ -16,6 +16,12 @@ description: |
   Supports multiple Jenkins servers in one install via
   `settings.instances` — refer to one by `instance: "prod"` when calling
   a tool, defaults to the first.
+
+catalog_summary: |
+  Jenkins REST API (server-side, API token auth, multi-instance).
+  Trigger parameterized builds, poll build status, fetch console logs
+  and artifacts, list jobs. Folder-nested job paths supported. Pass
+  `instance: "prod"` to pick which Jenkins server when multiple configured.
 
 settings:
   instances:

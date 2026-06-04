@@ -1,7 +1,7 @@
 id: scap
 name: SCAP (Fortinet PSIRT)
 icon: 🔒
-version: "0.3.1"
+version: "0.3.2"
 author: forge
 category: connector
 mode: browser-side
@@ -56,6 +56,12 @@ description: |
           → find_for_product(product) → extract_issues(latest row's
             scan_artifacts_url) → known_mantis go to bug-fix-batch
           → new_sast first go through create_bug + same pipeline
+
+catalog_summary: |
+  Fortinet PSIRT SCAP reports (browser-runner, /reports/ffi). List
+  reports, find latest scan for a product, extract_issues fetches the
+  artifacts zip in-tab and parses CSV/zip → returns known_mantis[] +
+  new_sast[] filtered by severity. Used for SCA/SAST blocker triage.
 
 host_match: "https://scap.fortinet.com/*"
 

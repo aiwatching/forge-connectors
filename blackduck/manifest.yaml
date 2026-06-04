@@ -1,7 +1,7 @@
 id: blackduck
 name: Black Duck
 icon: 🦆
-version: "0.1.0"
+version: "0.1.1"
 author: forge
 category: connector
 mode: server-side
@@ -31,6 +31,12 @@ description: |
   Designed to cross-validate the SCAP connector's SCA section: same
   project + version on both sides should produce overlapping
   CVE / BDSA lists.
+
+catalog_summary: |
+  Synopsys Black Duck SCA (server-side, bearer-token-exchange auth via
+  long-lived API token → ~2h JWT, cached). Read tools: list projects,
+  project versions, version risk profile, vulnerable BOM components,
+  component details. 6 read tools. Pairs with SCAP for cross-validation.
 
 # Top-level auth — every HTTP tool inherits. The bearer JWT lives in
 # Forge's in-memory cache for ~2h.

@@ -1,7 +1,7 @@
 id: fortincm
 name: FortiNCM Device
 icon: 🌐
-version: "0.3.3"
+version: "0.3.4"
 author: forge
 category: connector
 mode: server-side
@@ -46,6 +46,12 @@ description: |
     LLMs/pipelines: just call any REST tool with `host` and the params
     it actually needs. No more `login`/`token` plumbing. AdomId still
     has to be supplied per-call where required — see `adom_id` param.
+
+catalog_summary: |
+  FortiNCM (Network Configuration Manager) — central manager for
+  FortiNAC fleets. SSH/CLI + REST (auto bearer-token-exchange, JWT
+  cached ~9 min). Requires NCM 8.0.0+; call check_compatibility first
+  on a fresh install. Manage ADOMs, devices, policies, configs. 78 tools.
 
 settings:
   port:

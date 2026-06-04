@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.7.1"
+version: "1.7.2"
 author: forge
 category: connector
 mode: server-side
@@ -25,6 +25,12 @@ description: |
   Forge can't probe this passively — `2fa_verify` IS the auth, not a
   status check — so it's not in Login Status. You notice it when git
   breaks, copy the command, done.
+
+catalog_summary: |
+  GitLab REST API (server-side, Personal Access Token auth). Read and
+  search merge requests (search_mrs, list_my_todos), view issues and
+  epics, read files and diffs, post notes/todos, manage labels, trigger
+  pipelines, query projects/branches/commits. 25+ tools.
 
 settings:
   base_url:

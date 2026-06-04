@@ -1,7 +1,7 @@
 id: github-api
 name: GitHub API
 icon: 🐙
-version: 0.2.0
+version: 0.2.1
 author: forge
 description: |
   GitHub REST API connector — runs entirely server-side (no browser tab
@@ -12,6 +12,12 @@ description: |
   request shape and Forge issues it from the server. Templates expand
   {settings.*} (user-supplied) and {args.*} (LLM-supplied) into url,
   headers, query, and body.
+
+catalog_summary: |
+  GitHub REST API (server-side, optional Personal Access Token for
+  private repos / higher rate limits). Read repos, issues, PRs,
+  releases, file contents. Public endpoints work unauthenticated;
+  set the token only when needed.
 
 category: connector
 mode: server-side
