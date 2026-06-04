@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.6"
+version: "0.12.7"
 author: forge
 category: connector
 mode: server-side
@@ -799,33 +799,51 @@ tools:
       Skip this tool if a specific typed tool exists — typed tools have
       better parameter docs and clearer return shapes.
 
-      ── COMMON FOOTGUNS (verified against fnac-rest-schema-7.6.json) ──
+      ── COMMON FOOTGUNS (verified against real NAC 7.6 UI requests) ──
 
-      Creating an ADMIN user:
-        ✗ POST /user                    — that's the END-USER (host) endpoint;
-                                          adminUser:true is IGNORED, password
-                                          gets validated against the strict
-                                          host password policy → 409 "supplied
-                                          password is not valid" even for
-                                          strong passwords. DO NOT use this for
-                                          admins.
-        ✓ POST /user/admin              (operationId: addNewAdmin)
-              body: { userName: "...", password: "...", profile: 1, ... }
-          Required: userName.  Profile 1 = Full Admin on fresh installs.
-          See AddAdminUserRequest schema for optional fields (email,
-          firstName/lastName, restAPIUser, mfaMethod, neverExpires, etc).
-        Set password later if needed: POST /user/set-password.
+      Creating an ADMIN user — the OpenAPI schema is WRONG/INCOMPLETE
+      for this build. Real NAC UI sends ALL these fields:
 
-      Field name catches:
-        - User identifier on POST /user/admin is `userName`, NOT `userID`.
-        - Admin profile id field is `profile` (integer), NOT `adminProfileId`.
-        - Password field is `password` (not `passwd` / `userPassword`).
+        POST /user/admin   body MUST be the FULL form (empty strings ok,
+                           but field must be present — missing fields → 500):
+        {
+          "type": 46,                    // admin-user type byte — REQUIRED
+          "authType": "CM",              // local NAC auth — NOT "local"
+          "profile": "<id>",             // STRING not int. Must exist:
+                                         //   GET /user/admin-profile first
+                                         //   to find a real id (often 4,
+                                         //   NOT always 1)
+          "userName": "<login>",
+          "password": "<password>",
+          "firstName": "",
+          "lastName": "",
+          "address": "", "city": "", "mailState": "", "zipCode": "",
+          "countryCode": "US",
+          "phone": "", "mobileNumber": "", "smsPro": "",
+          "email": "",
+          "position": "", "notes": "",
+          "dn": "",
+          "mfaMethod": "0",              // STRING "0" — NOT "NONE"
+          "neverExpires": "true",        // STRING "true" — NOT boolean
+          "propagateHosts": true,        // actual boolean
+          "restAPIUser": false,
+          "restAPIRanges": "[]",
+          "restAPIToken": ""
+        }
 
-      Anti-retry rule: if a POST returns 409 with a vague message
-      ("not valid", "policy"…) and no specific field name in it, DO NOT
-      retry blindly with different values. Stop, tell the user the
-      server rejected it, and ask them to verify the endpoint / policy
-      in the NAC UI.
+      Note string vs. boolean inconsistency above — yes the API really
+      wants both. Match this shape EXACTLY; do not normalize types.
+
+      Wrong endpoint catches:
+        ✗ POST /user                — END-USER (host) endpoint. Password
+                                      validated by host policy → 409. NOT
+                                      for admins.
+        ✗ POST /user/admin-user     — 404, doesn't exist.
+
+      Anti-retry rule: if the SAME tool call (same path + similar body)
+      returns 500 or 409 twice in a row, DO NOT keep trying variants
+      blindly. Stop, tell the user the server is rejecting it, and ask
+      them to verify the endpoint via the NAC UI's F12 Network tab.
     protocol: http
     parameters:
       host:         { type: string, required: true }
