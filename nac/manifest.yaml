@@ -1,7 +1,7 @@
 id: nac
 name: FortiNAC Device
 icon: 🛡️
-version: "0.12.6"
+version: "0.12.5"
 author: forge
 category: connector
 mode: server-side
@@ -818,69 +818,6 @@ tools:
         Content-Type: "application/json"
       body: "{args.body_json}"
     returns: "Whatever the NAC endpoint returns — typically { status, results, errorMessage }."
-
-  # ─────────── Admin / user management ────────────────────────
-
-  create_admin_user:
-    description: |
-      Create a new admin user via POST /actions/user.
-
-      ⚠️ PASSWORD POLICY IS OPAQUE: FortiNAC server-side rejects passwords
-      with HTTP 409 + "The supplied password is not valid" but does NOT
-      tell you which rule failed. The rules vary by install (config in
-      NAC UI → System → Security → Password Policy).
-
-      Empirical knowns from probing:
-        - The `password` field IS the right field name (NOT passwd / userPassword — those 500).
-        - Even 12-char passwords mixing upper / lower / digits / specials get rejected.
-        - The rejection is server-side; client-side complexity alone doesn't satisfy it.
-        - It is likely checking: NOT containing username substring,
-          NOT in a blacklist, NOT matching a historic password, length
-          ≥ some N, no repeated chars > N, etc.
-
-      ⚠️ DO NOT retry blindly. If this returns 409 "password not valid":
-        1. Tell the USER the password failed and ASK them to either
-           (a) provide a different password they know meets policy
-               (e.g. one they currently use as admin on this NAC), OR
-           (b) create the user via the NAC web UI (Users → Add Admin),
-               which will surface the actual policy error inline.
-        2. STOP calling this tool further. Endless retries waste time.
-
-      adminProfileId=1 is the default "Full Admin" profile on a fresh
-      install. If your NAC has custom profiles, GET /actions/user/admin-profile
-      first to find the right id.
-    protocol: http
-    parameters:
-      host:         { type: string, required: true, description: "NAC mgmt IP/hostname (e.g. 10.15.52.152)." }
-      port:         { type: number, default: 8443 }
-      jsessionid:   { type: string, required: true, description: "From login()." }
-      session_key:  { type: string, required: true, description: "From login()." }
-      userID:       { type: string, required: true, description: "Login name. Lowercase, no spaces (e.g. 'zliu')." }
-      password:     { type: string, required: true, description: "Initial password. MUST satisfy NAC's password policy (opaque — see tool description). Do NOT retry blindly on 409." }
-      firstName:    { type: string, default: "", description: "First name (display only)." }
-      lastName:     { type: string, default: "", description: "Last name (display only)." }
-      email:        { type: string, default: "", description: "Email address." }
-      adminProfileId: { type: number, default: 1, description: "Admin profile id. 1 = Full Admin on fresh installs. Use GET /actions/user/admin-profile to list." }
-    request:
-      method: POST
-      url: "https://{args.host}:{args.port}/actions/user?resetUserTimeout=false&APIDEBUG=false&NAC_SERVER=&"
-      headers:
-        Cookie: "JSESSIONID={args.jsessionid}"
-        Authorization: "{args.session_key}"
-        Accept: "application/json"
-        Content-Type: "application/json"
-      body: |
-        {
-          "userID": "{args.userID}",
-          "password": "{args.password}",
-          "firstName": "{args.firstName}",
-          "lastName": "{args.lastName}",
-          "email": "{args.email}",
-          "adminUser": true,
-          "userAdministrative": true,
-          "adminProfileId": {args.adminProfileId}
-        }
-    returns: "{ status: 'success'|'error', result: UserRecord|null, errorMessage?: string }. On 409 with 'supplied password is not valid', STOP — ask the user, don't retry."
 
   # ─────────── Network device (switch / AP) queries ───────────
 
