@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.0"
+version: "0.26.1"
 author: forge
 category: connector
 mode: browser-side
@@ -334,7 +334,15 @@ tools:
       match nothing.
 
       Use these dedicated params instead:
-        - status         — by Mantis status (open / new / assigned / ...)
+        - status         — by Mantis STATUS (workflow state: new / acknowledged /
+                           assigned / resolved / closed / ...). NOT for
+                           "resolution=open". The Mantis Resolution field has
+                           its own values (open / reopened / fixed / ...) — for
+                           those use the `resolution` arg below.
+        - resolution     — by Mantis RESOLUTION field. Values include
+                           open / reopened / fixed / wont_fix / duplicate / ...
+                           If the user says "resolution is open" or "open or
+                           reopened", THIS is the arg, not `status`.
         - project_id     — by Mantis project (numeric id from list_projects)
         - fix_schedule   — Fix Schedule text — uses Mantis search_fixforecast
                            URL param (server-side; fast). Example "7.6.7".
@@ -368,7 +376,7 @@ tools:
         required: false
       status:
         type: string
-        description: "Mantis status name, comma list, 'open' (all <80), or 'all' (no filter)."
+        description: "Mantis STATUS (workflow state) — name / comma list / 'open' (all <80) / 'all'. NOT for resolution=open (use `resolution` arg)."
         label: |
           Status filter. Accepts a single name or comma list:
             new, feedback, acknowledged, confirmed, assigned,
@@ -477,13 +485,17 @@ tools:
         required: false
       resolution:
         type: string
-        description: "Resolution filter — comma list of names ('fixed,duplicate') or numeric ids ('20,60')."
+        description: |
+          Mantis RESOLUTION field filter — DIFFERENT from `status`. Comma
+          list of names. Common: 'open', 'open,reopened' (unfixed bugs),
+          'fixed', 'wont_fix', 'duplicate'. When user says "resolution is
+          open/reopened", pass it HERE, not in `status`.
         label: |
           Resolution filter — accepts human names OR numeric ids.
           Comma-separated for multi-value (matches ANY of them).
           Names: open(10), fixed(20), reopened(30), unable_to_reproduce(40),
           not_fixable(50), duplicate(60), not_a_bug(70), suspended(80),
-          wont_fix(90). Examples: "open", "open,reopened", "20".
+          wont_fix(90). Examples: "open,reopened", "fixed", "20".
         required: false
       filter_form_mapping:
         type: object
