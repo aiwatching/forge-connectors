@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.1"
+version: "0.26.2"
 author: forge
 category: connector
 mode: browser-side
@@ -599,6 +599,20 @@ tools:
       const reporterId = resolveUserId(args.reporter);
       const qaAssigneeId = resolveUserId(args.qa_assignee);
 
+      // ── Strip stray surrounding quotes from string filter args ──
+      // Pipelines sometimes pass `keyword: "'QA Automation Test'"`
+      // (shell-escape leak — value carries the single quotes verbatim).
+      // Treat paired '...' or "..." wrappers as noise so enum lookup
+      // still matches "QA Automation Test".
+      for (const k of ['keyword', 'source', 'status', 'resolution', 'severity', 'category', 'query']) {
+        const v = args[k];
+        if (typeof v !== 'string') continue;
+        const t = v.trim();
+        if (t.length >= 2 && ((t[0] === "'" && t[t.length-1] === "'") || (t[0] === '"' && t[t.length-1] === '"'))) {
+          args[k] = t.slice(1, -1);
+        }
+      }
+
       // ── Enum cache pre-pass ──────────────────────────────────────
       // If refresh_enum_cache has been run we have a snapshot of every
       // install-specific multicheckbox enum (Keyword, Source, Severity,
@@ -848,6 +862,8 @@ tools:
         open: 10, fixed: 20, reopened: 30, unable_to_reproduce: 40,
         not_fixable: 50, duplicate: 60, not_a_bug: 70, suspended: 80,
         wont_fix: 90,
+        // tolerant aliases for common LLM/shorthand mistypes
+        reopen: 30, re_open: 30, wontfix: 90, no_fix: 50, notabug: 70,
       };
       const _resolutionIds = [];
       const _resolutionRaw = String(args.resolution || '').trim();

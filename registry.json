@@ -42,9 +42,9 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.26.1",
+      "version": "0.26.2",
       "author": "forge",
-      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.26.1 — search_bugs description fix: surface `resolution` arg in the dedicated-params list and explicitly distinguish it from `status` (LLMs were misreading 'resolution=open/reopened' as 'status=open' and getting back the wrong bug set). v0.26.0 was the underlying URL-direct rewrite (GET view_all_set.php with URL params — Mantis writes its own HttpOnly cookie).",
+      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.26.2 — tolerant input normalization: strip stray surrounding quotes from string args ('QA Automation Test' from shell-escape leak → QA Automation Test); accept reopen/wontfix/notabug as aliases for reopened/wont_fix/not_a_bug. v0.26.1 surfaced the resolution arg in search_bugs docs to stop LLMs confusing it with status. v0.26.0 was the URL-direct rewrite (GET view_all_set.php with URL params — Mantis writes its own HttpOnly cookie).",
       "min_forge_version": "0.8.0"
     },
     {
