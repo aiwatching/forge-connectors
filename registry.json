@@ -42,9 +42,9 @@
       "id": "mantis",
       "name": "MantisBT",
       "icon": "\ud83d\udc1e",
-      "version": "0.25.6",
+      "version": "0.25.7",
       "author": "forge",
-      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.6: always fetch the filter form with view_type=advanced&show_advance=1 — never trust the live page form, which depends on the user's saved filter slot state and may have hidden the keyword/category multi-select sections. This guarantees multi_keyword renders so the keyword filter actually applies server-side.",
+      "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.25.7: emergency revert of v0.25.6 — fetching the form fresh broke Fortinet's Mantis instance (all queries returned 0, including bare). Back to v0.25.5 behavior: prefer live form, fetch only as fallback. Live form has the project context already set by the user's browser; fresh-fetched form has differently-defaulted fields whose POST corrupts the saved filter slot.",
       "min_forge_version": "0.8.0"
     },
     {

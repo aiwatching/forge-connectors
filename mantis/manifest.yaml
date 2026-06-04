@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.25.6"
+version: "0.25.7"
 author: forge
 category: connector
 mode: browser-side
@@ -1188,28 +1188,28 @@ tools:
       // already-logged-in Mantis tab; if it's not currently on
       // view_all_bug_page.php we GET that URL and parse the form via
       // DOMParser. fetch() inherits session cookies.
-      // v0.25.6: ALWAYS fetch fresh with show_advance=1, never trust the
-      // live page form. The live form depends on user's saved filter
-      // slot state — if their saved filter has the "advanced" section
-      // collapsed, multi_keyword (and other advanced fields) won't be
-      // rendered, so our filter silently drops. Fetching with
-      // show_advance=1 forces Mantis to render the full advanced section
-      // regardless of saved state. Falls back to live form only if fetch
-      // genuinely fails (network / auth).
-      let form;
-      let formSource = 'fetched-advanced';
-      try {
-        const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced&show_advance=1',
-          { credentials: 'include' });
-        const html = await fr.text();
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        form = doc.getElementById('filters');
-      } catch (e) {
-        _formApplied._fetch_error = e.message;
-      }
+      // v0.25.7: REVERT v0.25.6 — fetching fresh with show_advance=1 broke
+      // Fortinet's Mantis instance: ALL queries returned 0 (including bare
+      // query with just project_id), even though _post_status was 200.
+      // Hypothesis: the fetched form has differently-defaulted hidden
+      // fields than the live one, so submitting it corrupts the user's
+      // f=3 saved filter slot on the server. Going back to the v0.25.5
+      // behavior — prefer live form, only fetch as fallback — restores
+      // working state. The keyword-not-rendered case remains an issue
+      // but a partial result is better than zero.
+      let form = document.getElementById('filters');
+      let formSource = 'live';
       if (!form) {
-        form = document.getElementById('filters');
-        formSource = form ? 'live-fallback' : 'none';
+        try {
+          const fr = await fetch(baseDir + 'view_all_bug_page.php?view_type=advanced',
+            { credentials: 'include' });
+          const html = await fr.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          form = doc.getElementById('filters');
+          formSource = 'fetched';
+        } catch (e) {
+          _formApplied._fetch_error = e.message;
+        }
       }
       _formApplied._form_source = formSource;
 
