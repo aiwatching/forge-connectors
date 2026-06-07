@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.7.3"
+version: "1.8.0"
 author: forge
 category: connector
 mode: server-side
@@ -26,6 +26,17 @@ settings:
     label: GitLab base URL (no trailing /api/v4)
     description: e.g. https://gitlab.com or https://gitlab.example.com
     required: true
+  token_name:
+    type: string
+    label: PAT label
+    description: |
+      The name you gave the Personal Access Token when you created it on
+      GitLab — i.e. the "Token name" field on the PAT creation page, NOT
+      your login. Other connectors cross-reference this value via
+      `{connector:gitlab.token_name}`; Jenkins passes it as the
+      TOKEN_USER build param so triggered jobs can push to git using
+      the PAT.
+    required: false
   token:
     type: secret
     label: Personal Access Token
