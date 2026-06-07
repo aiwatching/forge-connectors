@@ -37,6 +37,16 @@ settings:
       Stored AES-256-GCM-encrypted in ~/.forge/data/plugin-configs.json
       with the key at ~/.forge/data/.encrypt-key.
     required: true
+  default_project_path:
+    type: string
+    label: Default project path
+    description: |
+      Repo path with namespace, e.g. "team-x/some-service". When set,
+      tools that take a project (find_project, search_mrs, list_my_todos,
+      etc.) fall back to this when the LLM doesn't pass one — so users
+      can say "list my open MRs" without spelling out the repo every
+      time. Leave empty to require an explicit project on every call.
+    required: false
 
 test:
   description: "GET /api/v4/user — verifies base_url + PAT reach GitLab."

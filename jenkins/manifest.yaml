@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.7"
+version: "0.1.8"
 author: forge
 category: connector
 mode: server-side
@@ -52,6 +52,15 @@ settings:
         type: secret
         label: API token
         required: true
+      default_job_path:
+        type: string
+        label: Default job_path
+        required: false
+        description: |
+          Used by trigger_build / get_job / etc. when the LLM omits
+          `job_path`. Example for Fortinet:
+            job/fortinac-build-7.6-token
+          Leave empty to require an explicit job_path on every call.
       inject_params:
         type: instances
         label: "Auto-inject build params"
@@ -191,7 +200,14 @@ tools:
       Trigger a job build. Supply `params` as an object of build-parameter
       key/values (use `get_job_params` first to know what keys the job
       accepts). Jenkins responds 201 with an empty body — the actual
-      build number isn't returned. To track the build:
+      build number isn't returned.
+
+      `job_path` is optional — if the selected instance has
+      `default_job_path` configured, Forge uses it when you omit the
+      arg. So "build the default job" works without spelling out the
+      path; pass an explicit path to override.
+
+      To track the build:
         1. call `get_next_build_number` BEFORE this to learn the # that
            will be assigned, then poll `get_build` on that number, OR
         2. call `get_queue` after to find the queue item, then follow
@@ -214,9 +230,11 @@ tools:
         description: 'Instance name from settings.instances. Defaults to the first.'
       job_path:
         type: string
-        required: true
+        required: false
         url_encoding: none
-        description: 'Full job path with "job/" prefixes.'
+        description: |
+          Full job path with "job/" prefixes (e.g. "job/deploy-app").
+          Omit to use the instance's `default_job_path` if set.
       params:
         type: json
         description: |
