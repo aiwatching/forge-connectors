@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.7.2"
+version: "1.7.3"
 author: forge
 category: connector
 mode: server-side
@@ -13,18 +13,6 @@ description: |
   the CLI alike.
 
   Replaces the 0.2.x browser-DOM-scraping connector.
-
-  ── 2FA refresh (Fortinet internal only) ───────────────────────────
-  Some internal GitLab installs gate git push/fetch behind a periodic
-  2FA window. When git ops start failing with "2FA required", run
-  this in a local terminal — it sends a push to your phone and
-  re-arms the window for ~8h:
-
-      ssh git@<your-gitlab-host> 2fa_verify
-
-  Forge can't probe this passively — `2fa_verify` IS the auth, not a
-  status check — so it's not in Login Status. You notice it when git
-  breaks, copy the command, done.
 
 catalog_summary: |
   GitLab REST API (server-side, Personal Access Token auth). Read and

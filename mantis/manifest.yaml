@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.6"
+version: "0.26.7"
 author: forge
 category: connector
 mode: browser-side
@@ -482,10 +482,10 @@ tools:
         required: false
       severity:
         type: string
-        description: "Severity filter — comma list of names ('major'), ids ('60'), or Fortinet S-codes ('S1,S2')."
+        description: "Severity filter — comma list of names ('major'), ids ('60'), or S-codes ('S1,S2') for installs that map severity → S1/S2/S3/S4."
         label: |
           Severity filter — comma-separated. Accepts human names OR
-          numeric ids OR Fortinet S-codes:
+          numeric ids OR S-codes (some installs map severity → S-codes):
             feature(10), trivial(20), text(30), tweak(40),
             minor(50)/S4, major(60)/S3, crash(70)/S2, block(80)/S1.
           Examples: "high", "S1,S2", "block,crash".

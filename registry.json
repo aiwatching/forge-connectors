@@ -1,48 +1,22 @@
 {
   "version": 1,
-  "updated_at": "2026-06-02T00:00:00Z",
+  "updated_at": "2026-06-06T00:00:00Z",
+  "wizard_template": "templates/connector-config-template.json",
   "connectors": [
-    {
-      "id": "nac",
-      "name": "FortiNAC Device",
-      "icon": "\ud83d\udee1\ufe0f",
-      "version": "0.12.7",
-      "author": "forge",
-      "description": "FortiNAC appliance \u2014 SSH/CLI + REST API (72 tools). v0.12 adds 5 group writes: add/remove devices to/from a group, copy group, update GroupDto, delete group. For host/port/user groups use call_api with system/group/add-members (needs type byte). v0.12.1: call_api preserves slashes in path (url_encoding: none) + leaves out empty body so GET works with default body_json=\"\". v0.12.2: list_hosts moves optional query params (filters, start, count, sortKey, sortDir) from URL template into spec.query \u2014 Forge drops unset filters cleanly so LLM omitting filter no longer 400s. v0.12.3: call_api description warns against ? in path; list_hosts notes large-scan 500 workaround. v0.12.4: run_command exposes timeout_sec arg (default 60s, bump for slow diagnose commands).",
-      "min_forge_version": "0.9.17"
-    },
-    {
-      "id": "fortincm",
-      "name": "FortiNCM Device",
-      "icon": "\ud83c\udf10",
-      "version": "0.3.4",
-      "author": "forge",
-      "description": "FortiNCM (Network Configuration Manager) appliance \u2014 central manager for FortiNAC fleets. Requires NCM 8.0.0+ (older builds return 404 on most calls; call check_compatibility(host) first). SSH/CLI + REST (78 tools). Auto-auth via bearer-token-exchange \u2014 only username/password in settings. v0.3.3: call_api fixes URL building \u2014 manifest now prepends /api/v3/, path is no-encoding-slashes (matches nac.call_api convention).",
-      "min_forge_version": "0.10.24"
-    },
-    {
-      "id": "tp",
-      "name": "FortiNAC Test Platform",
-      "icon": "\ud83e\uddea",
-      "version": "0.7.2",
-      "author": "forge",
-      "description": "FortiNAC TP browser connector \u2014 NFR read/edit + weekly status + comments, plus automation (labs, testcases, pytest runs, results) and get_lab_devices. v0.7.x uses the v2 /adc/automation/pytest/ API; list_testcases walks the new recursive tree shape and supports search/prefix filters.",
-      "min_forge_version": "0.9.17"
-    },
     {
       "id": "jenkins",
       "name": "Jenkins",
-      "icon": "\ud83d\udd27",
+      "icon": "🔧",
       "version": "0.1.6",
       "author": "forge",
-      "description": "Jenkins REST API connector \u2014 trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
+      "description": "Jenkins REST API connector — trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "mantis",
       "name": "MantisBT",
-      "icon": "\ud83d\udc1e",
-      "version": "0.26.6",
+      "icon": "🐞",
+      "version": "0.26.7",
       "author": "forge",
       "description": "Read + comment on MantisBT bugs from the user's logged-in browser session. Search, list attachments, download files, post notes. v0.26.2 — tolerant input normalization: strip stray surrounding quotes from string args ('QA Automation Test' from shell-escape leak → QA Automation Test); accept reopen/wontfix/notabug as aliases for reopened/wont_fix/not_a_bug. v0.26.1 surfaced the resolution arg in search_bugs docs to stop LLMs confusing it with status. v0.26.0 was the URL-direct rewrite (GET view_all_set.php with URL params — Mantis writes its own HttpOnly cookie).",
       "min_forge_version": "0.8.0"
@@ -50,55 +24,37 @@
     {
       "id": "gitlab",
       "name": "GitLab",
-      "icon": "\ud83e\udd8a",
-      "version": "1.7.2",
+      "icon": "🦊",
+      "version": "1.7.3",
       "author": "forge",
-      "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos. v1.7.1 adds 2fa_verify hint in description for Fortinet internal users.",
+      "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
       "min_forge_version": "0.8.0"
     },
     {
       "id": "teams",
       "name": "Microsoft Teams",
-      "icon": "\ud83d\udcac",
+      "icon": "💬",
       "version": "0.9.1",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
       "min_forge_version": "0.8.0"
     },
     {
-      "id": "pmdb",
-      "name": "PMDB",
-      "icon": "\ud83c\udfed",
-      "version": "0.3.1",
-      "author": "forge",
-      "description": "Read-only DOM extraction from PMDB (Product Management Database) using the user's logged-in browser session.",
-      "min_forge_version": "0.8.0"
-    },
-    {
       "id": "github-api",
       "name": "GitHub API",
-      "icon": "\ud83d\udc19",
+      "icon": "🐙",
       "version": "0.2.1",
       "author": "forge",
-      "description": "GitHub REST API connector \u2014 runs entirely server-side. Optional PAT for private repos / higher rate limits.",
+      "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
       "min_forge_version": "0.8.0"
-    },
-    {
-      "id": "scap",
-      "name": "SCAP (Fortinet PSIRT)",
-      "icon": "\ud83d\udd12",
-      "version": "0.3.2",
-      "author": "forge",
-      "description": "Fortinet PSIRT SCAP \u2014 /reports/ffi. v0.3: extract_issues moved fully browser-side \u2014 fetches the artifacts zip in your logged-in tab (same-origin cookie auto-attached), parses zip + CSVs inline via DecompressionStream + minimal RFC4180 parser. No sessionid setting needed. Returns known_mantis[] + new_sast[] filtered by severity.",
-      "min_forge_version": "0.9.17"
     },
     {
       "id": "blackduck",
       "name": "Black Duck",
-      "icon": "\ud83e\udd86",
-      "version": "0.1.1",
+      "icon": "🦆",
+      "version": "0.1.2",
       "author": "forge",
-      "description": "Synopsys Black Duck SCA \u2014 6 read tools (projects, versions, risk profile, vulnerable BOM components, components). Uses Forge core's new bearer-token-exchange auth: configure base_url + long-lived API token, Forge auto-exchanges for ~2h bearer JWT and caches.",
+      "description": "Synopsys Black Duck SCA — 6 read tools (projects, versions, risk profile, vulnerable BOM components, components). Uses Forge core's new bearer-token-exchange auth: configure base_url + long-lived API token, Forge auto-exchanges for ~2h bearer JWT and caches.",
       "min_forge_version": "0.10.25"
     }
   ]

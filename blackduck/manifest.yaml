@@ -1,7 +1,7 @@
 id: blackduck
 name: Black Duck
 icon: 🦆
-version: "0.1.1"
+version: "0.1.2"
 author: forge
 category: connector
 mode: server-side
@@ -58,7 +58,7 @@ settings:
   base_url:
     type: string
     label: "Black Duck base URL"
-    description: "e.g. https://dops-blackduck.fortinet-us.com (no trailing slash)"
+    description: "e.g. https://blackduck.example.com (no trailing slash)"
     required: true
   api_token:
     type: secret
