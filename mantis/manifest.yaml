@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.26.7"
+version: "0.26.8"
 author: forge
 category: connector
 mode: browser-side
@@ -38,7 +38,14 @@ settings:
   default_project:
     type: string
     label: Default project name
-    description: "Optional — used when no project specified in queries"
+    description: |
+      Project name used as fallback when a chat or pipeline call omits
+      project/project_name/project_id. Forge's dispatcher stem-matches
+      `default_<param>` so this value fills `project_name` automatically;
+      the connector's get_filter script resolves the name → numeric id at
+      run time via the project-switcher cache. Set this so users can say
+      "search bugs assigned to me" without spelling out the project on
+      every call. Leave blank to require an explicit project per call.
   filter_form_mapping:
     type: object
     label: "Filter-form field mapping (advanced)"
