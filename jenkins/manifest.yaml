@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.6"
+version: "0.1.7"
 author: forge
 category: connector
 mode: server-side
@@ -69,10 +69,16 @@ settings:
             required: true
             description: "Exactly as the Jenkins job expects (e.g. TOKEN_PASSWORD, TOKEN_USER, GITLAB_PAT)."
           value:
-            type: secret
+            type: string
             label: "Value"
             required: true
-            description: "Encrypted at rest. Masked + 'Replace' to edit later."
+            description: |
+              Plain string. Use a cross-connector reference for credentials
+              you already hold elsewhere — e.g. `{connector:gitlab.token}`
+              (resolved at request time, never re-typed here) or
+              `{secret:scope.path}`. Hard-coded raw tokens are accepted
+              but stored AS-IS (no encryption — this field is a literal
+              passthrough by design).
 
 auth:
   type: basic
