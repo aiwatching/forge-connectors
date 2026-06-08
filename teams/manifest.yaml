@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.1"
+version: "0.9.2"
 author: forge
 category: connector
 mode: browser-side
@@ -660,17 +660,19 @@ tools:
 
   send_message:
     description: |
-      Send a text message. Three resolution tiers for `name`:
-        1. Left-rail treeitem (existing 1:1 / group chat).
-        2. Expand any collapsed left-rail GROUP heading (aria-expanded=false
-           on level-1 items like "Favorites", "Chats", "Teams and channels")
-           and retry tier 1 — fixes the case where the chat is hidden under
-           a folded section.
-        3. Top search box (#ms-searchux-input) — type the name, pick the
-           first matching person/chat from the suggestion popup, click it
-           to open (creating a NEW 1:1 chat if none exists).
+      Send a text message. Target resolution:
 
-      Without `name`: send to the currently-open chat.
+      A. With `email` (PREFERRED — uniquely identifies a Teams user):
+         Skip left-rail entirely (those are display names), drive the top
+         search box (#ms-searchux-input) directly with the email. Picks
+         the popup result whose innerText / aria-label contains the email,
+         falling back to the first match if none does.
+
+      B. With `name` (substring of display name, may be ambiguous):
+         Three tiers — (1) left-rail treeitem, (2) expand collapsed
+         left-rail group headings then retry, (3) fall through to search.
+
+      Without `email` or `name`: send to the currently-open chat.
 
       ⚠ Sends IMMEDIATELY without user confirmation. Caller is responsible
       for verifying the target and content before invoking. Plain text only
@@ -680,9 +682,13 @@ tools:
         type: string
         label: Message text
         required: true
+      email:
+        type: string
+        label: Recipient email (preferred — unique). Goes straight to the search box.
+        required: false
       name:
         type: string
-        label: Chat name (optional — substring, case-insensitive). If omitted, sends to the currently-open chat.
+        label: Chat name (optional — substring, case-insensitive). Used only when email is omitted.
         required: false
     returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
     page:
@@ -692,7 +698,13 @@ tools:
     script: |
       const text = String(args.text || '').trim();
       if (!text) return { ok: false, error: 'text is required and must be non-empty' };
+      const email = String(args.email || '').trim();
       const name = String(args.name || '').trim();
+      // Email is the canonical identifier — when set, skip the left-rail
+      // (those are display names, ambiguous) and drive the search box
+      // straight with the email string.
+      const searchQuery = email || name;
+      const skipLeftRail = !!email;
 
       // Wait for Teams ready
       const readyStart = Date.now();
@@ -725,16 +737,15 @@ tools:
         return -1;
       }
 
-      if (name) {
-        const lower = name.toLowerCase();
-        if (document.title.toLowerCase().includes(lower)) {
+      if (searchQuery) {
+        const lower = searchQuery.toLowerCase();
+        if (!skipLeftRail && document.title.toLowerCase().includes(lower)) {
           resolveTier = 'already-here';
         } else {
-          // Tier 1: left rail as-is
-          let match = findLeftRailMatch(lower);
-          // Tier 2: expand collapsed level-1 group headings ("Favorites",
-          // "Chats", "Teams and channels", …) then retry the search.
-          if (!match) {
+          // Tier 1+2 only run when no email — emails don't appear in
+          // left-rail labels, so trying to match would just waste time.
+          let match = skipLeftRail ? null : findLeftRailMatch(lower);
+          if (!match && !skipLeftRail) {
             const collapsed = [...document.querySelectorAll('[role="treeitem"][aria-level="1"][aria-expanded="false"]')];
             for (const g of collapsed) {
               const label = (g.innerText || '').split('\n')[0].trim();
@@ -742,7 +753,6 @@ tools:
               await new Promise(r => setTimeout(r, 250));
             }
             if (groupsExpanded.length > 0) {
-              // Settle for the newly-revealed treeitems to mount
               await new Promise(r => setTimeout(r, 600));
               match = findLeftRailMatch(lower);
             }
@@ -775,7 +785,7 @@ tools:
             if (!searchInput) {
               return {
                 ok: false,
-                error: `No left-rail match for "${name}" and search input not found. Open the chat manually first.`,
+                error: `No left-rail match for "${searchQuery}" and search input not found. Open the chat manually first.`,
                 groups_expanded: groupsExpanded,
                 visible_chats: [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')].slice(0, 30).map(c => (c.innerText || '').split('\n')[0].trim()).filter(Boolean),
               };
@@ -789,13 +799,11 @@ tools:
             searchInput.focus(); searchInput.click();
             await new Promise(r => setTimeout(r, 200));
             const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-            // Send char-by-char so React + Teams' autosuggest get every event
-            // they need (the all-at-once path was unreliable in probing).
             nativeSetter.call(searchInput, '');
             searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-            for (let i = 0; i < name.length; i++) {
-              const ch = name[i];
-              const partial = name.slice(0, i + 1);
+            for (let i = 0; i < searchQuery.length; i++) {
+              const ch = searchQuery[i];
+              const partial = searchQuery.slice(0, i + 1);
               searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
               nativeSetter.call(searchInput, partial);
               searchInput.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: ch, bubbles: true, cancelable: true }));
@@ -813,29 +821,41 @@ tools:
               if (popup && (popup.innerText || '').trim().length > 30) break;
             }
             if (!popup) {
-              // Clear the search box on failure
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              return { ok: false, error: 'Search popup did not appear within 8s', name };
+              return { ok: false, error: 'Search popup did not appear within 8s', query: searchQuery };
             }
 
-            // Pick the first item that mentions the name. Teams puts each
-            // result inside a role-presentation or role-option wrapper with
-            // the person's display name in innerText.
-            const lowerName = name.toLowerCase();
+            // Match strategy:
+            //   - When searching by email, prefer the row whose innerText
+            //     (or aria-label) literally contains the email — Teams
+            //     surfaces the email beneath the display name. Falls back
+            //     to first row.
+            //   - When searching by name, match by substring as before.
+            const lowerQuery = searchQuery.toLowerCase();
             const allRows = [...popup.querySelectorAll('[role="option"], [data-tid^="search-suggestion"], [data-tid$="-result"], li, button, div[tabindex="-1"]')];
             const seenTexts = new Set();
             const candidates = [];
             for (const el of allRows) {
               const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+              const aria = (el.getAttribute('aria-label') || '').toLowerCase();
               if (!txt || seenTexts.has(txt) || txt.length > 200) continue;
               seenTexts.add(txt);
-              if (txt.toLowerCase().includes(lowerName)) candidates.push({ el, text: txt });
+              const haystack = (txt + ' ' + aria).toLowerCase();
+              if (haystack.includes(lowerQuery)) candidates.push({ el, text: txt });
               if (candidates.length >= 8) break;
+            }
+            // Email mode: if no row contains the email verbatim (Teams may
+            // hide email in tooltip / details), accept the first popup
+            // result rather than failing — backend already filtered to a
+            // matching person.
+            if (email && candidates.length === 0 && allRows.length > 0) {
+              const first = allRows.find((el) => ((el.innerText || '').trim().length > 0));
+              if (first) candidates.push({ el: first, text: (first.innerText || '').trim().split('\n')[0] });
             }
             if (candidates.length === 0) {
               const preview = (popup.innerText || '').slice(0, 400);
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              return { ok: false, error: `Search popup had no item matching "${name}"`, popup_text_preview: preview };
+              return { ok: false, error: `Search popup had no item matching "${searchQuery}"`, popup_text_preview: preview };
             }
             searchPicked = candidates[0].text;
             resolveTier = 'search';
