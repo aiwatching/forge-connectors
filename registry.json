@@ -61,7 +61,7 @@
       "id": "onedrive",
       "name": "OneDrive (SharePoint)",
       "icon": "\u2601\ufe0f",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": "forge",
       "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 3 tools: create_folder, upload_file, read_file. No PAT stored \u2014 rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
       "min_forge_version": "0.10.51"

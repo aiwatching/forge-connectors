@@ -1,7 +1,7 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.0"
+version: "0.2.1"
 author: forge
 category: connector
 mode: browser-side
@@ -31,7 +31,7 @@ catalog_summary: |
   SharePoint cookies — no PAT stored.
 
 settings:
-  site_url:
+  base_url:
     type: string
     label: SharePoint site URL
     description: |
@@ -40,7 +40,7 @@ settings:
       Example: `https://contoso.sharepoint.com/sites/Engineering`
     required: true
 
-host_match: "{site_url}/*"
+host_match: "{base_url}/*"
 
 # Login Status probe — opens the site URL and checks landed URL didn't
 # bounce out to SAML (FedAuth cookie alive).
@@ -69,10 +69,10 @@ tools:
         required: true
     returns: "{ ok, name, server_relative_url, ui_url, time_created }"
     page:
-      url: "{site_url}"
+      url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
       const folderName = String(args.folder_name || '').trim().replace(/^\/+|\/+$/g, '');
       if (!folderName) return { error: 'folder_name is required' };
 
@@ -175,10 +175,10 @@ tools:
         default: true
     returns: "{ ok, name, server_relative_url, ui_url, size_bytes, unique_id }"
     page:
-      url: "{site_url}"
+      url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
       const filename = String(args.filename || '').trim();
       const folder = String(args.folder || '').trim().replace(/^\/+|\/+$/g, '');
       if (!filename) return { error: 'filename is required' };
@@ -279,10 +279,10 @@ tools:
         default: false
     returns: "{ ok, content, encoding ('utf-8' | 'base64'), size_bytes, server_relative_url }"
     page:
-      url: "{site_url}"
+      url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
       const path = String(args.path || '').trim().replace(/^\/+/, '');
       if (!path) return { error: 'path is required' };
 
