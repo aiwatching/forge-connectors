@@ -56,6 +56,15 @@
       "author": "forge",
       "description": "Synopsys Black Duck SCA \u2014 6 read tools (projects, versions, risk profile, vulnerable BOM components, components). Uses Forge core's new bearer-token-exchange auth: configure base_url + long-lived API token, Forge auto-exchanges for ~2h bearer JWT and caches.",
       "min_forge_version": "0.10.25"
+    },
+    {
+      "id": "onedrive",
+      "name": "OneDrive (SharePoint)",
+      "icon": "\u2601\ufe0f",
+      "version": "0.2.0",
+      "author": "forge",
+      "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 3 tools: create_folder, upload_file, read_file. No PAT stored \u2014 rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
+      "min_forge_version": "0.10.51"
     }
   ]
 }

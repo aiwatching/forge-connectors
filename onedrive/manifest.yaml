@@ -1,0 +1,336 @@
+id: onedrive
+name: OneDrive (SharePoint)
+icon: "☁️"
+version: "0.2.0"
+author: forge
+category: connector
+mode: browser-side
+min_forge_version: "0.10.51"
+
+# Tab strategy: reuse. SharePoint web is a heavy SPA with SAML round-trip
+# on login; we never want to spawn fresh tabs per call.
+
+description: |
+  Read + write files in a SharePoint team site (OneDrive for Business)
+  via the user's logged-in browser session. Three primitives:
+    • create_folder — make a folder under Shared Documents/
+    • upload_file  — drop a file into a folder
+    • read_file    — fetch a file's content
+
+  Auth rides existing SharePoint cookies (FedAuth / rtFa). No PAT
+  stored. RequestDigest (CSRF) is fetched per-call from
+  `/_api/contextinfo`.
+
+  Endpoint shapes were captured live from the SharePoint web UI's
+  network panel — not guessed. See connectors/onedrive/manifest.yaml
+  comments for the source request inventory.
+
+catalog_summary: |
+  Read + write files on a SharePoint team site (OneDrive for Business).
+  3 tools: create_folder, upload_file, read_file. Rides existing
+  SharePoint cookies — no PAT stored.
+
+settings:
+  site_url:
+    type: string
+    label: SharePoint site URL
+    description: |
+      Full URL of the SharePoint team site, including `/sites/<name>`.
+
+      Example: `https://contoso.sharepoint.com/sites/Engineering`
+    required: true
+
+host_match: "{site_url}/*"
+
+# Login Status probe — opens the site URL and checks landed URL didn't
+# bounce out to SAML (FedAuth cookie alive).
+test:
+  description: "Open SharePoint site and check the session is alive."
+  probe: browser
+  timeout_ms: 15000
+
+tools:
+  create_folder:
+    description: |
+      Create a folder under `Shared Documents/` on the configured
+      SharePoint site. Returns the folder's server-relative URL and
+      a UI URL the user can open in their browser.
+
+      Idempotent: re-creating an existing folder returns 200 with the
+      existing folder's metadata (SharePoint behaviour, not an error).
+    destructive: true
+    parameters:
+      folder_name:
+        type: string
+        label: Folder name
+        description: |
+          Folder name (or nested path) under Shared Documents/. Slashes
+          allowed for nested creation, e.g. "team-reports/2026-Q2".
+        required: true
+    returns: "{ ok, name, server_relative_url, ui_url, time_created }"
+    page:
+      url: "{site_url}"
+      on_target: "sharepoint.com"
+    script: |
+      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const folderName = String(args.folder_name || '').trim().replace(/^\/+|\/+$/g, '');
+      if (!folderName) return { error: 'folder_name is required' };
+
+      // Site name — last path segment of /sites/<Name>.
+      const siteMatch = SITE_URL.match(/\/sites\/([^/]+)/);
+      if (!siteMatch) return { error: `site_url must contain /sites/<Name> (got: ${SITE_URL})` };
+      const siteName = siteMatch[1];
+
+      // Get RequestDigest (CSRF).
+      let digest;
+      try {
+        const dr = await fetch(SITE_URL + '/_api/contextinfo', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Accept': 'application/json;odata=verbose' },
+        });
+        if (!dr.ok) {
+          let body = ''; try { body = (await dr.text()).slice(0, 300); } catch {}
+          return { error: `contextinfo HTTP ${dr.status}`, body };
+        }
+        const dj = await dr.json();
+        digest = dj?.d?.GetContextWebInformation?.FormDigestValue;
+        if (!digest) return { error: 'contextinfo returned no FormDigestValue' };
+      } catch (e) {
+        return { error: `contextinfo failed: ${e.message}` };
+      }
+
+      // Full server-relative path: /sites/<Site>/Shared Documents/<folder>
+      const serverRel = `/sites/${siteName}/Shared Documents/${folderName}`;
+      const url = `${SITE_URL}/_api/web/folders/AddUsingPath(DecodedUrl=@a1,overwrite=@a2)`
+        + `?@a1='${encodeURIComponent(serverRel)}'&@a2=false`
+        + `&$Expand=ListItemAllFields/PermMask`;
+
+      const r = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json;odata=verbose',
+          'Content-Type': 'application/json;odata=verbose',
+          'X-RequestDigest': digest,
+          'X-MS-CC': 't',
+        },
+      });
+      if (!r.ok) {
+        let body = ''; try { body = (await r.text()).slice(0, 500); } catch {}
+        return { error: `AddUsingPath HTTP ${r.status}`, status: r.status, body };
+      }
+      const data = await r.json();
+      const d = data?.d || {};
+      const rel = d.ServerRelativeUrl || serverRel;
+      const tenantRoot = SITE_URL.replace(/\/sites\/.*$/, '');
+      // UI viewer URL — what the user clicks in Forge chat to open in browser.
+      const uiUrl = `${tenantRoot}${rel.replace('/Shared Documents/', '/Shared%20Documents/Forms/AllItems.aspx?id=/').replace('Shared Documents', 'Shared%20Documents')}`;
+      return {
+        ok: true,
+        name: d.Name || folderName,
+        server_relative_url: rel,
+        ui_url: `${SITE_URL}/Shared%20Documents/Forms/AllItems.aspx?id=${encodeURIComponent(rel)}`,
+        time_created: d.TimeCreated || null,
+        unique_id: d.UniqueId || null,
+      };
+
+  upload_file:
+    description: |
+      Upload a file to a folder under `Shared Documents/`. Caller passes
+      content as base64 — Forge can't read the server's filesystem from
+      a browser-side script, so the LLM is expected to:
+
+        1. Read the local file (Read tool) — gets text content
+        2. Base64-encode it
+        3. Call upload_file({ folder, filename, content_base64 })
+
+      Returns the file's server-relative URL + UI URL for sharing.
+      Existing files with the same name are overwritten (SharePoint's
+      default; pass `overwrite: false` to fail-on-conflict instead).
+    destructive: true
+    parameters:
+      folder:
+        type: string
+        label: Folder path
+        description: |
+          Folder path under Shared Documents/. Examples:
+            • "forge-share" — root-level folder
+            • "team-reports/2026-Q2" — nested
+        required: true
+      filename:
+        type: string
+        label: Filename
+        description: "Just the filename, no path. Slashes rejected."
+        required: true
+      content_base64:
+        type: string
+        label: File content (base64)
+        description: "Base64-encoded bytes of the file to upload."
+        required: true
+      overwrite:
+        type: boolean
+        label: Overwrite if exists
+        description: "Default true. Set false to error when filename already exists in folder."
+        default: true
+    returns: "{ ok, name, server_relative_url, ui_url, size_bytes, unique_id }"
+    page:
+      url: "{site_url}"
+      on_target: "sharepoint.com"
+    script: |
+      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const filename = String(args.filename || '').trim();
+      const folder = String(args.folder || '').trim().replace(/^\/+|\/+$/g, '');
+      if (!filename) return { error: 'filename is required' };
+      if (filename.includes('/') || filename.includes('\\')) {
+        return { error: 'filename must not contain path separators' };
+      }
+      if (!folder) return { error: 'folder is required' };
+      if (!args.content_base64) return { error: 'content_base64 is required' };
+
+      const siteMatch = SITE_URL.match(/\/sites\/([^/]+)/);
+      if (!siteMatch) return { error: `site_url must contain /sites/<Name> (got: ${SITE_URL})` };
+      const siteName = siteMatch[1];
+
+      // Decode base64 → Uint8Array.
+      let bytes;
+      try {
+        const binary = atob(args.content_base64.replace(/\s+/g, ''));
+        bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      } catch (e) {
+        return { error: `content_base64 invalid: ${e.message}` };
+      }
+      const sizeBytes = bytes.length;
+
+      // RequestDigest.
+      let digest;
+      try {
+        const dr = await fetch(SITE_URL + '/_api/contextinfo', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Accept': 'application/json;odata=verbose' },
+        });
+        if (!dr.ok) return { error: `contextinfo HTTP ${dr.status}` };
+        const dj = await dr.json();
+        digest = dj?.d?.GetContextWebInformation?.FormDigestValue;
+        if (!digest) return { error: 'contextinfo returned no FormDigestValue' };
+      } catch (e) {
+        return { error: `contextinfo failed: ${e.message}` };
+      }
+
+      const folderRel = `/sites/${siteName}/Shared Documents/${folder}`;
+      const overwrite = args.overwrite === false ? 'false' : 'true';
+
+      // AddUsingPath endpoint — matches the live capture verbatim, minus
+      // the optional XorHash (SharePoint uses XorHash for dedup hints,
+      // safe to omit on first upload).
+      const url = `${SITE_URL}/_api/web/GetFolderByServerRelativePath(DecodedUrl=@a1)`
+        + `/Files/AddUsingPath(DecodedUrl=@a2,AutoCheckoutOnInvalidData=@a3,Overwrite=@a4)`
+        + `?@a1='${encodeURIComponent(folderRel)}'&@a2='${encodeURIComponent(filename)}'`
+        + `&@a3=true&@a4=${overwrite}`
+        + `&$Select=ServerRelativeUrl,UniqueId,Name,ServerRedirectedUrl,WebId,SiteId,ListId`
+        + `&$Expand=ListItemAllFields`;
+
+      const r = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        body: bytes,
+        headers: {
+          'Accept': 'application/json;odata=verbose',
+          'Content-Type': 'application/octet-stream',
+          'X-RequestDigest': digest,
+          'X-MS-CC': 't',
+        },
+      });
+      if (!r.ok) {
+        let body = ''; try { body = (await r.text()).slice(0, 500); } catch {}
+        return { error: `Upload HTTP ${r.status}`, status: r.status, body };
+      }
+      const data = await r.json();
+      const d = data?.d || {};
+      const rel = d.ServerRelativeUrl || `${folderRel}/${filename}`;
+      return {
+        ok: true,
+        name: d.Name || filename,
+        server_relative_url: rel,
+        ui_url: `${SITE_URL}/Shared%20Documents/Forms/AllItems.aspx?id=${encodeURIComponent(rel)}&parent=${encodeURIComponent(folderRel)}`,
+        size_bytes: sizeBytes,
+        unique_id: d.UniqueId || null,
+      };
+
+  read_file:
+    description: |
+      Fetch a file's content from SharePoint. By default decodes as UTF-8
+      text — pass `as_base64: true` for binary files (PDFs, images, etc).
+
+      Path is relative to `Shared Documents/`. Example:
+        • path: "forge-share/foo.md" → reads /sites/<Site>/Shared Documents/forge-share/foo.md
+    parameters:
+      path:
+        type: string
+        label: File path
+        description: "Path relative to Shared Documents/ (no leading slash)."
+        required: true
+      as_base64:
+        type: boolean
+        label: Return as base64
+        description: "When true, returns raw bytes base64-encoded instead of decoding as UTF-8 text."
+        default: false
+    returns: "{ ok, content, encoding ('utf-8' | 'base64'), size_bytes, server_relative_url }"
+    page:
+      url: "{site_url}"
+      on_target: "sharepoint.com"
+    script: |
+      const SITE_URL = (settings.site_url || '').replace(/\/+$/, '');
+      const path = String(args.path || '').trim().replace(/^\/+/, '');
+      if (!path) return { error: 'path is required' };
+
+      const siteMatch = SITE_URL.match(/\/sites\/([^/]+)/);
+      if (!siteMatch) return { error: `site_url must contain /sites/<Name> (got: ${SITE_URL})` };
+      const siteName = siteMatch[1];
+
+      const serverRel = `/sites/${siteName}/Shared Documents/${path}`;
+      // SharePoint exposes raw file bytes via `/$value` on GetFileByServerRelativePath.
+      // No RequestDigest needed for GET (read-only).
+      const url = `${SITE_URL}/_api/web/GetFileByServerRelativePath(DecodedUrl='${encodeURIComponent(serverRel)}')/$value`;
+
+      const r = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Accept': '*/*' },
+      });
+      if (!r.ok) {
+        let body = ''; try { body = (await r.text()).slice(0, 300); } catch {}
+        return { error: `Read HTTP ${r.status}`, status: r.status, body, server_relative_url: serverRel };
+      }
+      const buf = await r.arrayBuffer();
+      const sizeBytes = buf.byteLength;
+
+      if (args.as_base64) {
+        // Convert ArrayBuffer → base64 (use chunked encoding to avoid
+        // call-stack blow on >100KB files where String.fromCharCode(...arr)
+        // hits the spread-arg limit).
+        const u8 = new Uint8Array(buf);
+        let binary = '';
+        const CHUNK = 8192;
+        for (let i = 0; i < u8.length; i += CHUNK) {
+          binary += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+        }
+        return {
+          ok: true,
+          content: btoa(binary),
+          encoding: 'base64',
+          size_bytes: sizeBytes,
+          server_relative_url: serverRel,
+        };
+      } else {
+        const text = new TextDecoder('utf-8').decode(buf);
+        return {
+          ok: true,
+          content: text,
+          encoding: 'utf-8',
+          size_bytes: sizeBytes,
+          server_relative_url: serverRel,
+        };
+      }
