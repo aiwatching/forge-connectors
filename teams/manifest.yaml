@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.1"
+version: "0.10.2"
 author: forge
 category: connector
 mode: browser-side
@@ -555,9 +555,17 @@ tools:
         for (let i = 0; i < 10 && f && !best; i++, f = f.return) { if (f.memoizedProps) scan(f.memoizedProps, 0); }
         return best || any || null;
       };
-      const extractAttachments = (root) => {
+      // MUST run on a LIVE node, never a cloneNode() copy: object_url lives
+      // in the card's React fiber (__reactFiber$ expando), and cloneNode
+      // copies attributes/children but NOT expando props — so a cloned root
+      // always yields object_url:null (images still work, they use the
+      // data-orig-src attribute which clones fine — that asymmetry is why
+      // screenshots downloaded but file attachments didn't). excludeNodes
+      // lets the root post skip cards that belong to its replies.
+      const extractAttachments = (root, excludeNodes) => {
         const out = [];
         root.querySelectorAll('[data-tid="file-attachment-grid"] [role="group"][aria-label]').forEach(g => {
+          if (excludeNodes && excludeNodes.some(ex => ex && ex.contains && ex.contains(g))) return;
           const lines = (g.getAttribute('aria-label') || '').split('\n').map(s => s.trim()).filter(Boolean);
           const name = lines[0] || '';
           if (!name || /toolbar/i.test(name)) return;
@@ -604,7 +612,9 @@ tools:
         return {
           mid, subject, author, timestamp: ts,
           body: (bodyEl?.innerText || '').trim(),
-          attachments: extractAttachments(ownScope),
+          // Attachments from the LIVE post (fiber-backed object_url), excluding
+          // reply cards. Images can stay on the cloned ownScope (attribute-based).
+          attachments: extractAttachments(post, replyContainers),
           images: extractImages(ownScope),
           replies,
         };
