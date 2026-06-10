@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.3"
+version: "0.9.4"
 author: forge
 category: connector
 mode: browser-side
@@ -22,6 +22,19 @@ description: |
   Selectors verified on teams.microsoft.com/v2/ via chrome-devtools-mcp.
   Microsoft rotates Fluent UI hooks — when extraction starts returning
   empty, re-probe and bump this manifest.
+
+  Left-rail anchors (v0.9.4 — precise, replaced fragile aria-level):
+    - Chats:    [role="treeitem"][data-item-type="chat"|"muted-chat"]
+    - Channels: [role="treeitem"][data-item-type="channel"]
+    - Teams:    [role="treeitem"][data-item-type="team"]
+    A channel's owning team = the nearest preceding data-item-type="team"
+    in document order. The stable thread id lives in the suffix of
+    data-fui-tree-item-value (after the last '|'). aria-level is NOT used
+    for selection — level 2 mixes chats + teams + menu items, which was
+    the root cause of mis-targeting.
+    Lazy lists: items past "See more" (chats) / "See all your teams"
+    (teams) aren't in the DOM until that expander is clicked — each tool
+    clicks it once and retries before giving up.
 
 catalog_summary: |
   Microsoft Teams web client (browser-runner, isolated CSP world).
@@ -48,62 +61,48 @@ test:
 tools:
   list_chats:
     description: |
-      List chats from the left rail, grouped by section (Favorites,
-      Chats, Meeting threads, Teams and channels). Returns whatever
-      Teams has rendered — virtualized for very long lists.
+      List 1:1 and group chats from the left rail (recent + favorites,
+      including muted). Returns title + stable thread_id + muted/unread
+      flags. Virtualized + lazy — chats past "See more" aren't rendered
+      until expanded; read_chat(name) expands on demand.
     parameters:
-      sections:
-        type: string
-        label: Sections to include (comma-separated)
-        description: "Defaults to 'Favorites,Chats'. Use 'all' for everything."
-        default: "Favorites,Chats"
       limit:
         type: number
         default: 100
-    returns: "{ sections: [{ name, items: [{ title }] }], total }"
+    returns: "{ chats: [{ title, thread_id, muted, unread }], total }"
     page:
       url: "{base_url}/v2/"
       on_target: "teams.microsoft.com"
       settle_after_load_ms: 5000
     script: |
-      // Wait for left rail tree to populate (handles cold Teams load)
+      // Precise chat list via data-item-type (chat + muted-chat). The old
+      // aria-level grouping pulled in teams + menu items; this is clean.
+      const CHAT_SEL = '[role="treeitem"][data-item-type="chat"], [role="treeitem"][data-item-type="muted-chat"]';
+      const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
+      const threadIdOf = (el) => {
+        const v = el.getAttribute('data-fui-tree-item-value') || '';
+        const m = (v.split('/').pop() || '').match(/\|(.+)$/);
+        return m ? m[1] : null;
+      };
+
       const tStart = Date.now();
       while (Date.now() - tStart < 30000) {
-        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        if (document.querySelectorAll(CHAT_SEL).length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
 
-      const sectionFilter = String(args.sections || 'Favorites,Chats').toLowerCase();
-      const wantAll = sectionFilter === 'all';
-      const wanted = new Set(sectionFilter.split(',').map(s => s.trim().toLowerCase()));
-
-      const level1 = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
-      const sections = level1.map(group => {
-        const firstLine = (group.innerText || '').split('\n')[0].trim();
-        const items = Array.from(group.querySelectorAll('[role="treeitem"][aria-level="2"]'))
-          .map(t => ({
-            title: (t.innerText || '').split('\n')[0].trim(),
-            data_tid: t.getAttribute('data-tid') || '',
-            id: t.id || '',
-          }))
-          .filter(it => it.title);
-        return { name: firstLine, items };
-      }).filter(s => wantAll || wanted.has(s.name.toLowerCase()));
-
-      const total = sections.reduce((n, s) => n + s.items.length, 0);
       const limit = args.limit || 100;
-      let remaining = limit;
-      const sliced = sections.map(s => {
-        const take = Math.max(0, remaining);
-        const out = { name: s.name, items: s.items.slice(0, take) };
-        remaining -= out.items.length;
-        return out;
-      });
+      const chats = [...document.querySelectorAll(CHAT_SEL)].map(el => ({
+        title: firstLine(el),
+        thread_id: threadIdOf(el),
+        muted: el.getAttribute('data-item-type') === 'muted-chat',
+        unread: /\bUnread\b/.test(el.getAttribute('aria-label') || '') || /\bUnread\b/.test(el.innerText || ''),
+      })).filter(c => c.title);
 
       return {
-        sections: sliced,
-        total,
-        _virtualized: true,
+        chats: chats.slice(0, limit),
+        total: chats.length,
+        _note: 'Virtualized + lazy — chats past "See more" need it expanded (read_chat does this on demand).',
         _waited_ms: Date.now() - tStart,
         _page: location.href,
       };
@@ -219,7 +218,7 @@ tools:
         type: number
         label: Max messages (most recent)
         default: 50
-    returns: "{ ok, chat_title, messages: [...], total, switched_in_ms, waited_for_ready_ms }"
+    returns: "{ ok, chat_title, thread_id, messages: [{ author, body, timestamp, attachments:[{name,url}], images:[{url,alt,width,height}] }], total, switched_in_ms }"
     page:
       url: "{base_url}/v2/"
       on_target: "teams.microsoft.com"
@@ -227,32 +226,53 @@ tools:
     script: |
       const name = String(args.name || '').trim();
       if (!name) return { ok: false, error: 'name parameter is required' };
+      const lower = name.toLowerCase();
+
+      // Precise chat anchor — data-item-type, NOT aria-level (which mixes
+      // chats/teams/menu items). Covers normal + muted chats.
+      const CHAT_SEL = '[role="treeitem"][data-item-type="chat"], [role="treeitem"][data-item-type="muted-chat"]';
+      const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
+      const threadIdOf = (el) => {
+        const v = el.getAttribute('data-fui-tree-item-value') || '';
+        const m = (v.split('/').pop() || '').match(/\|(.+)$/);
+        return m ? m[1] : null;
+      };
 
       // 1. Wait for Teams left rail to be ready (cold load handling)
       const readyStart = Date.now();
       while (Date.now() - readyStart < 30000) {
-        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        if (document.querySelectorAll(CHAT_SEL).length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
       const waitedForReadyMs = Date.now() - readyStart;
-      if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length === 0) {
+      if (document.querySelectorAll(CHAT_SEL).length === 0) {
         return { ok: false, error: 'Teams did not finish loading in 30s — try again or refresh the tab.' };
       }
 
-      // 2. Find candidate treeitem in the left rail
-      const candidates = [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')];
-      const lower = name.toLowerCase();
-      const match = candidates.find(t => {
-        const first = (t.innerText || '').split('\n')[0].trim().toLowerCase();
-        return first.includes(lower);
-      });
+      // 2. Find matching chat — with one lazy "See more" expand + retry
+      const findChat = () => [...document.querySelectorAll(CHAT_SEL)]
+        .find(t => firstLine(t).toLowerCase().includes(lower)) || null;
+      let match = findChat();
+      let expandedSeeMore = false;
+      if (!match) {
+        const seeMore = [...document.querySelectorAll('[role="treeitem"]')]
+          .find(el => /^See more$/i.test(firstLine(el)));
+        if (seeMore) {
+          try { seeMore.click(); } catch {}
+          expandedSeeMore = true;
+          await new Promise(r => setTimeout(r, 900));
+          match = findChat();
+        }
+      }
       if (!match) {
         return {
           ok: false,
-          error: `No chat in left rail matching "${name}". Either the chat is in "See more", or not in your visible list.`,
-          visible_chats: candidates.slice(0, 30).map(c => (c.innerText || '').split('\n')[0].trim()).filter(Boolean),
+          error: `No chat matching "${name}" (even after expanding "See more"). Try the exact display name, or it may be reachable only via search.`,
+          expanded_see_more: expandedSeeMore,
+          visible_chats: [...document.querySelectorAll(CHAT_SEL)].slice(0, 40).map(firstLine).filter(Boolean),
         };
       }
+      const matchedThreadId = threadIdOf(match);
 
       // 3. If already on this chat, skip the click+wait
       const currentTitle = document.title;
@@ -283,7 +303,26 @@ tools:
         }
       }
 
-      // 4. Extract messages
+      // 4. Extract messages. Prefer time[datetime] (clean ISO) over the
+      //    human "Yesterday 5:27 PM" timestamp text. Attachments + pasted
+      //    screenshots matter for issue analysis — images expose the REAL
+      //    data-orig-src (asyncgw AMS URL), not the useless blob: src.
+      const extractAttachments = (root) => {
+        const out = [];
+        root.querySelectorAll('[data-tid="file-attachment-grid"] [role="group"][aria-label]').forEach(g => {
+          const lines = (g.getAttribute('aria-label') || '').split('\n').map(s => s.trim()).filter(Boolean);
+          const nm = lines[0] || '';
+          if (!nm || /toolbar/i.test(nm)) return;
+          const url = lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
+          out.push({ name: nm, url });
+        });
+        return out;
+      };
+      const extractImages = (root) => [...root.querySelectorAll('[data-tid="lazy-image-2"]')].map(el => {
+        const e = el.tagName === 'IMG' ? el : (el.querySelector('img') || el);
+        return { url: e.getAttribute('data-orig-src') || e.getAttribute('data-gallery-src') || null, alt: e.getAttribute('alt') || null, width: e.naturalWidth || null, height: e.naturalHeight || null };
+      }).filter(im => im.url);
+
       const items = [...document.querySelectorAll('[data-tid="chat-pane-item"]')];
       const messages = items.map(item => {
         const msg = item.querySelector('[data-tid="chat-pane-message"]');
@@ -291,16 +330,19 @@ tools:
         const authorEl = item.querySelector('[data-tid="message-author-name"]');
         const contentEl = mid ? document.getElementById('content-' + mid) : null;
         const tsEl = mid ? document.getElementById('timestamp-' + mid) : null;
+        const timeEl = item.querySelector('time[datetime]');
         const reactionEls = item.querySelectorAll('[data-tid="diverse-reaction-pill-button"], [data-tid*="reaction-pill"]');
         const reactions = [...reactionEls].map(r => r.getAttribute('aria-label') || r.textContent.trim()).filter(Boolean);
         return {
           mid,
           author: authorEl?.innerText.trim() || '',
           body: contentEl?.innerText.trim() || msg?.innerText.trim() || '',
-          timestamp: tsEl?.getAttribute('title') || tsEl?.innerText.trim() || '',
+          timestamp: timeEl?.getAttribute('datetime') || tsEl?.getAttribute('title') || tsEl?.innerText.trim() || '',
           reactions,
+          attachments: extractAttachments(item),
+          images: extractImages(item),
         };
-      }).filter(m => m.body || m.author);
+      }).filter(m => m.body || m.author || m.attachments.length || m.images.length);
 
       const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
       const chatTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
@@ -309,7 +351,9 @@ tools:
       return {
         ok: true,
         chat_title: chatTitle,
-        matched_name: (match.innerText || '').split('\n')[0].trim(),
+        matched_name: firstLine(match),
+        thread_id: matchedThreadId,
+        expanded_see_more: expandedSeeMore,
         switched: !alreadyHere,
         switched_in_ms: waitedMs,
         waited_for_ready_ms: waitedForReadyMs,
@@ -322,8 +366,14 @@ tools:
   read_channel:
     description: |
       Switch to a specific channel by team name + channel name and
-      extract its top-level posts. The team must be expanded in the
-      left rail (collapsed teams have no channels in DOM).
+      extract its top-level posts WITH attachments and pasted screenshots
+      — channels are mostly customer issues, so file names (logs, configs)
+      and screenshot URLs are essential for analysis. Each post + reply
+      carries attachments:[{name,url}] and images:[{url,alt,w,h}] where
+      url is the real authenticated Teams AMS image URL.
+
+      Locates the channel precisely via data-item-type (not aria-level);
+      auto-expands "See all your teams" once if the team isn't visible.
     parameters:
       team:
         type: string
@@ -336,7 +386,7 @@ tools:
       limit:
         type: number
         default: 20
-    returns: "{ ok, team, channel, posts: [...] }"
+    returns: "{ ok, team, channel, channel_thread_id, posts: [{ subject, author, timestamp, body, attachments:[{name,url}], images:[{url,alt,width,height}], replies:[...] }], total }"
     page:
       url: "{base_url}/v2/"
       on_target: "teams.microsoft.com"
@@ -347,48 +397,68 @@ tools:
       if (!teamName || !channelName) {
         return { ok: false, error: 'team and channel parameters are required' };
       }
+      const tLower = teamName.toLowerCase(), cLower = channelName.toLowerCase();
+      const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
+      const threadIdOf = (el) => {
+        const v = el.getAttribute('data-fui-tree-item-value') || '';
+        const m = (v.split('/').pop() || '').match(/\|(.+)$/);
+        return m ? m[1] : null;
+      };
 
-      // Wait for Teams to be ready
+      // Wait for Teams to be ready (any channel treeitem present)
       const readyStart = Date.now();
       while (Date.now() - readyStart < 30000) {
-        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
-      if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length === 0) {
-        return { ok: false, error: 'Teams did not finish loading in 30s.' };
+      if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length === 0) {
+        return { ok: false, error: 'Teams did not finish loading (no channels in left rail in 30s).' };
       }
 
-      const level1 = [...document.querySelectorAll('[role="treeitem"][aria-level="1"]')];
-      const tnc = level1.find(t => /teams\s*and\s*channels/i.test((t.innerText || '').split('\n')[0]));
-      if (!tnc) return { ok: false, error: 'Teams and channels section not found' };
-
-      const teams = [...tnc.querySelectorAll('[role="treeitem"][aria-level="2"]')];
-      const team = teams.find(t => (t.innerText || '').split('\n')[0].toLowerCase().includes(teamName.toLowerCase()));
-      if (!team) {
+      // Locate the channel by walking the flat tree in document order:
+      // a channel belongs to the nearest preceding data-item-type="team".
+      // This is precise — aria-level mixes chats/teams/menu items.
+      const locate = () => {
+        const items = [...document.querySelectorAll('[role="treeitem"]')];
+        let curTeam = null;
+        for (const el of items) {
+          const ty = el.getAttribute('data-item-type');
+          if (ty === 'team') curTeam = firstLine(el);
+          else if (ty === 'channel' && curTeam &&
+                   curTeam.toLowerCase().includes(tLower) &&
+                   firstLine(el).toLowerCase().includes(cLower)) {
+            return { channelEl: el, teamLabel: curTeam };
+          }
+        }
+        return null;
+      };
+      let hit = locate();
+      // Lazy: target team/channel may be behind "See all your teams" or a
+      // collapsed team. Click the expander once and retry.
+      let expanded = false;
+      if (!hit) {
+        const expander = [...document.querySelectorAll('[role="treeitem"]')]
+          .find(el => /^See all your teams$/i.test(firstLine(el)));
+        if (expander) {
+          try { expander.click(); } catch {}
+          expanded = true;
+          await new Promise(r => setTimeout(r, 1000));
+          hit = locate();
+        }
+      }
+      if (!hit) {
+        const teams = [...document.querySelectorAll('[role="treeitem"][data-item-type="team"]')].map(firstLine);
         return {
           ok: false,
-          error: `Team "${teamName}" not found`,
-          visible_teams: teams.map(t => (t.innerText || '').split('\n')[0].trim()),
+          error: `Channel "${channelName}" under team "${teamName}" not found. The team may be collapsed (expand it in Teams) or not joined.`,
+          expanded_see_all: expanded,
+          visible_teams: teams,
         };
       }
+      const channel = hit.channelEl;
+      const channelThreadId = threadIdOf(channel);
 
-      const channels = [...team.querySelectorAll('[role="treeitem"][aria-level="3"]')];
-      if (channels.length === 0) {
-        return {
-          ok: false,
-          error: `Team "${teamName}" is collapsed — no channels in DOM. Expand it in Teams first.`,
-        };
-      }
-      const channel = channels.find(c => (c.innerText || '').split('\n')[0].toLowerCase().includes(channelName.toLowerCase()));
-      if (!channel) {
-        return {
-          ok: false,
-          error: `Channel "${channelName}" not found under team "${teamName}"`,
-          visible_channels: channels.map(c => (c.innerText || '').split('\n')[0].trim()),
-        };
-      }
-
-      const alreadyHere = document.title.toLowerCase().includes(channelName.toLowerCase());
+      const alreadyHere = document.title.toLowerCase().includes(cLower);
       let waitedMs = 0;
       if (!alreadyHere) {
         const oldKeys = new Set(
@@ -409,6 +479,33 @@ tools:
         }
       }
 
+      // Attachments + pasted screenshots — critical for customer-issue
+      // analysis. Attachments: filename (+ SharePoint link when present).
+      // Images: data-orig-src is the REAL authenticated Teams AMS URL (the
+      // visible src is a session-scoped blob: that's useless outside the
+      // page). Scope each extractor to a node so replies don't leak the
+      // parent post's media.
+      const extractAttachments = (root) => {
+        const out = [];
+        root.querySelectorAll('[data-tid="file-attachment-grid"] [role="group"][aria-label]').forEach(g => {
+          const lines = (g.getAttribute('aria-label') || '').split('\n').map(s => s.trim()).filter(Boolean);
+          const name = lines[0] || '';
+          if (!name || /toolbar/i.test(name)) return;
+          const url = lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
+          out.push({ name, url });
+        });
+        return out;
+      };
+      const extractImages = (root) => [...root.querySelectorAll('[data-tid="lazy-image-2"]')].map(el => {
+        const e = el.tagName === 'IMG' ? el : (el.querySelector('img') || el);
+        return {
+          url: e.getAttribute('data-orig-src') || e.getAttribute('data-gallery-src') || null,
+          alt: e.getAttribute('alt') || null,
+          width: e.naturalWidth || null,
+          height: e.naturalHeight || null,
+        };
+      }).filter(im => im.url);
+
       const posts = [...document.querySelectorAll('[data-tid="channel-pane-message"]')];
       const parsed = posts.map(post => {
         const midMatch = (post.id || '').match(/reply-chain-summary-(\d+)/);
@@ -427,9 +524,21 @@ tools:
             author: (rMid ? document.getElementById('author-' + rMid)?.textContent.trim() : '') || '',
             body: (rMid ? document.getElementById('content-' + rMid)?.innerText.trim() : '') || r.querySelector('[data-tid="message-body"]')?.innerText.trim() || '',
             timestamp: r.querySelector('[data-tid="timestamp"]')?.textContent.trim() || '',
+            attachments: extractAttachments(r),
+            images: extractImages(r),
           };
         });
-        return { mid, subject, author, timestamp: ts, body: (bodyEl?.innerText || '').trim(), replies };
+        // Root-post media = everything in the post minus what belongs to replies.
+        const replyIds = new Set(replyContainers.map(r => r.id));
+        const ownScope = post.cloneNode(true);
+        ownScope.querySelectorAll('[role="group"][id^="message-body-"]').forEach(r => { if (replyIds.has(r.id)) r.remove(); });
+        return {
+          mid, subject, author, timestamp: ts,
+          body: (bodyEl?.innerText || '').trim(),
+          attachments: extractAttachments(ownScope),
+          images: extractImages(ownScope),
+          replies,
+        };
       });
 
       const ordered = parsed.slice().reverse();
@@ -438,8 +547,10 @@ tools:
 
       return {
         ok: true,
-        team: (team.innerText || '').split('\n')[0].trim(),
+        team: hit.teamLabel,
         channel: channelTitle,
+        channel_thread_id: channelThreadId,
+        expanded_see_all: expanded,
         switched: !alreadyHere,
         switched_in_ms: waitedMs,
         posts: ordered.slice(0, args.limit || 20),
@@ -464,35 +575,36 @@ tools:
     script: |
       const tStart = Date.now();
       while (Date.now() - tStart < 30000) {
-        if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0) break;
+        if (document.querySelectorAll('[role="treeitem"][data-item-type="team"]').length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
+      const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
+      const threadIdOf = (el) => {
+        const v = el.getAttribute('data-fui-tree-item-value') || '';
+        const m = (v.split('/').pop() || '').match(/\|(.+)$/);
+        return m ? m[1] : null;
+      };
 
-      const level1 = Array.from(document.querySelectorAll('[role="treeitem"][aria-level="1"]'));
-      const tnc = level1.find(t => /teams\s*and\s*channels/i.test((t.innerText || '').split('\n')[0]));
-      if (!tnc) {
-        return { teams: [], total: 0, _error: 'Teams and channels section not found in left rail' };
+      // Walk the flat tree in document order; channels attach to the
+      // nearest preceding team. data-item-type is precise (no aria-level).
+      const items = [...document.querySelectorAll('[role="treeitem"][data-item-type="team"], [role="treeitem"][data-item-type="channel"]')];
+      const teams = [];
+      let cur = null;
+      for (const el of items) {
+        const ty = el.getAttribute('data-item-type');
+        const unread = /\bUnread\b/.test(el.getAttribute('aria-label') || '') || /\bUnread\b/.test(el.innerText || '');
+        if (ty === 'team') {
+          cur = { name: firstLine(el), thread_id: threadIdOf(el), unread, channels: [] };
+          teams.push(cur);
+        } else if (ty === 'channel' && cur) {
+          cur.channels.push({ name: firstLine(el), thread_id: threadIdOf(el), unread });
+        }
       }
-      const teamItems = Array.from(tnc.querySelectorAll('[role="treeitem"][aria-level="2"]'));
-      const teams = teamItems.map(team => {
-        const ariaLabel = team.getAttribute('aria-label') || '';
-        const visibleText = (team.innerText || '').split('\n')[0];
-        const label = ariaLabel || visibleText;
-        const unread = /\bUnread\b/.test(visibleText) || /\bUnread\b/.test(ariaLabel);
-        const name = label.replace(/^Unread\s+/, '').replace(/^Team\s+/, '').replace(/\s+Has context menu$/, '').trim();
-        const channelEls = Array.from(team.querySelectorAll('[role="treeitem"][aria-level="3"]'));
-        const channels = channelEls.map(c => {
-          const cAriaLabel = c.getAttribute('aria-label') || '';
-          const cVisible = (c.innerText || '').split('\n')[0];
-          const cLabel = cAriaLabel || cVisible;
-          const cUnread = /\bUnread\b/.test(cVisible) || /\bUnread\b/.test(cAriaLabel);
-          const cName = cLabel.replace(/^Unread\s+/, '').replace(/^Channel\s+/, '').replace(/\s+Channel at mention$/, '').replace(/\s+Has context menu$/, '').trim();
-          return { name: cName, unread: cUnread };
-        }).filter(c => c.name && c.name !== 'See all channels');
-        return { name, unread, channels, channels_visible: channels.length, channels_collapsed: channelEls.length === 0 };
-      }).filter(t => t.name && t.name !== 'See all your teams');
+      if (teams.length === 0) {
+        return { teams: [], total: 0, _error: 'No teams in left rail (Teams and channels section may be empty or not loaded)' };
+      }
       return {
-        teams: teams.slice(0, args.limit || 50),
+        teams: teams.slice(0, args.limit || 50).map(t => ({ ...t, channels_visible: t.channels.length, channels_collapsed: t.channels.length === 0 })),
         total: teams.length,
         _virtualized_channels: true,
         _page: location.href,

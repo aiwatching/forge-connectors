@@ -1,7 +1,7 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.4"
+version: "0.2.5"
 author: forge
 category: connector
 mode: browser-side
@@ -144,13 +144,14 @@ tools:
 
   upload_file:
     description: |
-      Upload a file to a folder under `Shared Documents/`. Caller passes
-      content as base64 — Forge can't read the server's filesystem from
-      a browser-side script, so the LLM is expected to:
+      Upload a file to a folder under `Shared Documents/`.
 
-        1. Read the local file (Read tool) — gets text content
-        2. Base64-encode it
-        3. Call upload_file({ folder, filename, content_base64 })
+      If the content already lives in Forge scratch (e.g. you used
+      save_scratch_file, or a dispatched task wrote it), pass
+      content_base64 = "scratch://<filename>" — Forge reads the file and
+      base64-encodes it server-side. This is the reliable path; do NOT
+      hand-encode large or non-ASCII content yourself. Only pass real
+      base64 when the bytes are small and you generated them directly.
 
       Returns the file's server-relative URL + UI URL for sharing.
       Existing files with the same name are overwritten (SharePoint's
@@ -173,7 +174,13 @@ tools:
       content_base64:
         type: string
         label: File content (base64)
-        description: "Base64-encoded bytes of the file to upload."
+        description: |
+          Base64-encoded bytes of the file to upload. If the file was
+          already saved to Forge scratch (e.g. by save_scratch_file or a
+          dispatched task), DO NOT hand-encode it — pass the string
+          "scratch://<filename>" and Forge base64-encodes the file
+          server-side. Hand-encoding large or non-ASCII content is
+          unreliable.
         required: true
       overwrite:
         type: boolean
