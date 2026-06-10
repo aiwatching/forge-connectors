@@ -1,7 +1,7 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.2"
+version: "0.2.3"
 author: forge
 category: connector
 mode: browser-side
@@ -73,7 +73,13 @@ tools:
       url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
+      // Derive SITE_URL from the current page — script context has no
+      // `settings.*`. page.url navigated us to {base_url} which lives at
+      // /sites/<Name>; SharePoint may redirect (e.g. → SitePages/Home.aspx)
+      // but the /sites/<Name> prefix is stable.
+      const _siteSeg = location.pathname.match(/^(\/sites\/[^/]+)/);
+      if (!_siteSeg) return { error: `not on a /sites/<Name> page: ${location.pathname}` };
+      const SITE_URL = location.origin + _siteSeg[1];
       const folderName = String(args.folder_name || '').trim().replace(/^\/+|\/+$/g, '');
       if (!folderName) return { error: 'folder_name is required' };
 
@@ -179,7 +185,13 @@ tools:
       url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
+      // Derive SITE_URL from the current page — script context has no
+      // `settings.*`. page.url navigated us to {base_url} which lives at
+      // /sites/<Name>; SharePoint may redirect (e.g. → SitePages/Home.aspx)
+      // but the /sites/<Name> prefix is stable.
+      const _siteSeg = location.pathname.match(/^(\/sites\/[^/]+)/);
+      if (!_siteSeg) return { error: `not on a /sites/<Name> page: ${location.pathname}` };
+      const SITE_URL = location.origin + _siteSeg[1];
       const filename = String(args.filename || '').trim();
       const folder = String(args.folder || '').trim().replace(/^\/+|\/+$/g, '');
       if (!filename) return { error: 'filename is required' };
@@ -283,7 +295,13 @@ tools:
       url: "{base_url}"
       on_target: "sharepoint.com"
     script: |
-      const SITE_URL = (settings.base_url || '').replace(/\/+$/, '');
+      // Derive SITE_URL from the current page — script context has no
+      // `settings.*`. page.url navigated us to {base_url} which lives at
+      // /sites/<Name>; SharePoint may redirect (e.g. → SitePages/Home.aspx)
+      // but the /sites/<Name> prefix is stable.
+      const _siteSeg = location.pathname.match(/^(\/sites\/[^/]+)/);
+      if (!_siteSeg) return { error: `not on a /sites/<Name> page: ${location.pathname}` };
+      const SITE_URL = location.origin + _siteSeg[1];
       const path = String(args.path || '').trim().replace(/^\/+/, '');
       if (!path) return { error: 'path is required' };
 
