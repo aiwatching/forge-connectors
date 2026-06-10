@@ -1,7 +1,7 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.3"
+version: "0.2.4"
 author: forge
 category: connector
 mode: browser-side
@@ -206,13 +206,31 @@ tools:
       const siteName = siteMatch[1];
 
       // Decode base64 → Uint8Array.
+      // Be liberal: accept URL-safe alphabet (-/_), strip every non-alphabet
+      // char, re-pad. atob() itself is strict and throws on the slightest
+      // whitespace/quote/escape leak — diagnostic info on failure helps
+      // pin down what arrived vs what was sent.
       let bytes;
+      const raw = String(args.content_base64 || '');
+      const cleaned = raw
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+        .replace(/[^A-Za-z0-9+/=]/g, '');
+      const padded = cleaned + '='.repeat((4 - (cleaned.length % 4)) % 4);
       try {
-        const binary = atob(args.content_base64.replace(/\s+/g, ''));
+        const binary = atob(padded);
         bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       } catch (e) {
-        return { error: `content_base64 invalid: ${e.message}` };
+        const stripped = (raw.match(/[^A-Za-z0-9+/=\-_\s]/g) || []).slice(0, 10);
+        return {
+          error: `content_base64 invalid: ${e.message}`,
+          raw_length: raw.length,
+          cleaned_length: padded.length,
+          first_40: raw.slice(0, 40),
+          last_40: raw.slice(-40),
+          bad_chars_sample: stripped,
+        };
       }
       const sizeBytes = bytes.length;
 
