@@ -1,11 +1,14 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.4"
+version: "0.9.5"
 author: forge
 category: connector
 mode: browser-side
 runner: isolated
+# Teams web is slow to load — keep the tab Forge opens alive and reuse it
+# (host_match match) on subsequent calls instead of reopening every time.
+tab_strategy: persistent
 description: |
   Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
   the runner's ISOLATED world — page CSP doesn't apply, but window
@@ -383,10 +386,16 @@ tools:
         type: string
         label: Channel name (substring, case-insensitive)
         required: true
+      max_messages:
+        type: number
+        label: How many posts to collect (scrolls up through the virtualized list to load older history)
+        description: "Default 20 (recent only). Higher values scroll up to harvest older posts — slower (~1s per scroll round)."
+        default: 20
       limit:
         type: number
+        description: "Cap on returned posts after collection. Defaults to max_messages."
         default: 20
-    returns: "{ ok, team, channel, channel_thread_id, posts: [{ subject, author, timestamp, body, attachments:[{name,url}], images:[{url,alt,width,height}], replies:[...] }], total }"
+    returns: "{ ok, team, channel, channel_thread_id, scroll_rounds, posts: [{ subject, author, timestamp, body, attachments:[{name,url}], images:[{url,alt,width,height}], replies:[...] }], total }"
     page:
       url: "{base_url}/v2/"
       on_target: "teams.microsoft.com"
@@ -506,10 +515,9 @@ tools:
         };
       }).filter(im => im.url);
 
-      const posts = [...document.querySelectorAll('[data-tid="channel-pane-message"]')];
-      const parsed = posts.map(post => {
+      const parsePost = (post) => {
         const midMatch = (post.id || '').match(/reply-chain-summary-(\d+)/);
-        const mid = midMatch ? midMatch[1] : '';
+        const mid = midMatch ? midMatch[1] : (post.id || '');
         const subject = post.querySelector('[data-tid="subject-line"]')?.textContent.trim() || '';
         const subheader = post.querySelector('[data-tid="post-message-subheader"]')?.textContent.trim() || '';
         const ts = post.querySelector('[data-tid="timestamp"]')?.textContent.trim() || '';
@@ -539,9 +547,40 @@ tools:
           images: extractImages(ownScope),
           replies,
         };
-      });
+      };
 
-      const ordered = parsed.slice().reverse();
+      // The message list is virtualized — only ~5-9 posts in the DOM at once,
+      // recycled as you scroll. To collect history we harvest (parse + dedup
+      // by mid) at EACH scroll step, scrolling UP from the bottom until the
+      // scroll height stops growing (reached the oldest) or we hit max_messages.
+      const maxMessages = Math.max(1, Number(args.max_messages) || 20);
+      const harvested = new Map();
+      const grab = () => document.querySelectorAll('[data-tid="channel-pane-message"]').forEach(p => {
+        const r = parsePost(p);
+        if (r.mid && !harvested.has(r.mid)) harvested.set(r.mid, r);
+      });
+      const vp = document.querySelector('[data-tid="channel-pane-viewport"]');
+      let scrollRounds = 0;
+      if (!vp || harvested.size >= maxMessages) {
+        grab();
+      } else {
+        vp.scrollTop = vp.scrollHeight;              // jump to newest
+        await new Promise(r => setTimeout(r, 700));
+        grab();
+        let lastSH = 0, dry = 0;
+        while (dry < 3 && scrollRounds < 40 && harvested.size < maxMessages) {
+          scrollRounds++;
+          vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.8);
+          vp.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
+          await new Promise(r => setTimeout(r, 900));
+          grab();
+          const sh = vp.scrollHeight;
+          if (sh > lastSH + 10 || vp.scrollTop > 5) dry = 0; else dry++;
+          lastSH = sh;
+        }
+      }
+      // mid is the post's epoch-ms id → sort ascending = oldest-first (chronological).
+      const ordered = [...harvested.values()].sort((a, b) => (Number(a.mid) || 0) - (Number(b.mid) || 0));
       const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
       const channelTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
 
@@ -553,8 +592,9 @@ tools:
         expanded_see_all: expanded,
         switched: !alreadyHere,
         switched_in_ms: waitedMs,
-        posts: ordered.slice(0, args.limit || 20),
-        total: parsed.length,
+        scroll_rounds: scrollRounds,
+        posts: ordered.slice(-(args.limit || maxMessages)),
+        total: harvested.size,
         _page: location.href,
       };
 

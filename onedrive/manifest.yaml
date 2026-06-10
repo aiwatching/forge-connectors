@@ -1,14 +1,14 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.5"
+version: "0.2.6"
 author: forge
 category: connector
 mode: browser-side
 min_forge_version: "0.10.51"
-
-# Tab strategy: reuse. SharePoint web is a heavy SPA with SAML round-trip
-# on login; we never want to spawn fresh tabs per call.
+# SharePoint web is a heavy SPA with a SAML round-trip on login — persistent
+# keeps the tab Forge opens alive for reuse instead of reopening per call.
+tab_strategy: persistent
 
 description: |
   Read + write files in a SharePoint team site (OneDrive for Business)
