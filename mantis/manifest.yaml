@@ -1,7 +1,7 @@
 id: mantis
 name: MantisBT
 icon: "🐞"
-version: "0.27.0"
+version: "0.27.1"
 author: forge
 category: connector
 mode: browser-side
@@ -309,7 +309,12 @@ tools:
         .map(r => {
           const c = Array.from(r.querySelectorAll('td')).map(x => x.innerText.trim());
           return { date: c[0], user: c[1], field: c[2], change: c[3] };
-        });
+        })
+        // Drop noise that just duplicates the notes/monitor list — these
+        // bloat the payload (and push notes past the result-size cap)
+        // without adding signal. Real field changes (Status, Assigned To,
+        // Severity, Resolution, …) are kept.
+        .filter(h => !/^Bugnote (Added|Edited|Deleted)|^Bug Monitored|^Tag Attached/.test(h.field));
 
       const id = Number(fields.ID || args.bug_id);
 
@@ -339,7 +344,21 @@ tools:
         notes,
         history,
         url: location.href,
-        _fields_raw: fields,
+        // Only the fields NOT already surfaced above, and only when
+        // non-empty. The old `_fields_raw: fields` dumped EVERY field
+        // (incl. a second full copy of Description) — ~10KB of pure
+        // redundancy that pushed the notes past the tool-result size cap
+        // and got them truncated.
+        _fields_extra: (() => {
+          const surfaced = new Set(['Summary','Description','Additional Information','Status','Resolution','Priority','Severity','Reproducibility','Category','Keyword','Reporter','Assigned To','QA Assignee','View Status','ETA','Date Submitted','Last Update','Reported Version','Fix Schedule','Source','Tag','ID']);
+          const extra = {};
+          for (const [k, v] of Object.entries(fields)) {
+            if (surfaced.has(k)) continue;
+            const val = (v || '').trim();
+            if (val) extra[k] = val;
+          }
+          return extra;
+        })(),
       };
 
   search_bugs:
