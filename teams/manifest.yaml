@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.5"
+version: "0.9.6"
 author: forge
 category: connector
 mode: browser-side
@@ -1057,21 +1057,13 @@ tools:
         return { ok: false, error: 'Compose box not found after waiting.' };
       }
 
-      const sendBtn = document.querySelector('[data-tid="sendMessageCommands-send"]');
-      if (!sendBtn) {
-        return { ok: false, error: 'Send button not found.' };
-      }
-
-      // Focus + paste-inject
+      // Inject text FIRST. The Send button (sendMessageCommands-send) only
+      // renders/enables once the composer has content — checking for it
+      // before typing was the bug: empty composer → "Send button not found".
       composer.focus();
       const dt = new DataTransfer();
       dt.setData('text/plain', text);
-      const pasteEvent = new ClipboardEvent('paste', {
-        clipboardData: dt,
-        bubbles: true,
-        cancelable: true,
-      });
-      composer.dispatchEvent(pasteEvent);
+      composer.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       await new Promise(r => setTimeout(r, 300));
 
       const composerText = composer.innerText.trim();
@@ -1083,22 +1075,51 @@ tools:
         };
       }
 
-      const disabled = sendBtn.hasAttribute('disabled') || sendBtn.getAttribute('aria-disabled') === 'true';
-      if (disabled) {
-        return { ok: false, error: 'Send button is still disabled after injection.' };
-      }
-
       const headerParticipant = document.querySelector('[data-tid^="participant-"]');
       const chatTitle = headerParticipant
         ? (headerParticipant.innerText || '').trim().split('\n')[0]
         : (document.title.split('|').map(s => s.trim())[1] || '');
 
-      sendBtn.click();
-      await new Promise(r => setTimeout(r, 400));
+      // Resilient send: poll up to ~6s for an ENABLED send button (data-tid
+      // primary, aria-label "Send (…)" fallback — survives Fluent hook
+      // rotation). If it never shows (search-opened chats sometimes leave
+      // the toolbar in a transient state), fall back to the keyboard
+      // shortcut the button itself advertises: Cmd/Ctrl+Enter.
+      const findSend = () => {
+        const cands = [...document.querySelectorAll('[data-tid="sendMessageCommands-send"], button[aria-label^="Send"]')];
+        return cands.find(b => !(b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true')) || null;
+      };
+      let sendBtn = null;
+      for (let i = 0; i < 30 && !sendBtn; i++) {
+        sendBtn = findSend();
+        if (sendBtn) break;
+        await new Promise(r => setTimeout(r, 200));
+      }
+
+      let sentVia = 'button';
+      if (sendBtn) {
+        sendBtn.click();
+      } else {
+        // Keyboard fallback — Teams sends on Cmd/Ctrl+Enter (per the send
+        // button's own "Send (⌘ Return)" label).
+        sentVia = 'keyboard';
+        composer.focus();
+        for (const mod of [{ metaKey: true }, { ctrlKey: true }]) {
+          composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, ...mod }));
+        }
+      }
+      await new Promise(r => setTimeout(r, 500));
+
+      // Verify it actually sent — composer should be empty again.
+      const stillThere = (composer.innerText || '').includes(text.slice(0, 30));
+      if (stillThere) {
+        return { ok: false, error: `Message typed but send did not go through (tried ${sentVia}). Composer still holds the text.`, sent_via: sentVia };
+      }
 
       return {
         ok: true,
         sent_text: text,
+        sent_via: sentVia,
         chat_title: chatTitle,
         switched,
         switched_in_ms: switchedMs,
