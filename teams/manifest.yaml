@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.0"
+version: "0.10.1"
 author: forge
 category: connector
 mode: browser-side
@@ -486,24 +486,43 @@ tools:
       const channel = hit.channelEl;
       const channelThreadId = threadIdOf(channel);
 
+      // Hydration gate. The title can already say we're on the channel
+      // while the message pane never rendered (a long-lived tab stuck
+      // half-loaded → stream_found:false). The old code trusted `alreadyHere`
+      // and harvested an EMPTY stream, silently returning posts:[]. So:
+      // require a non-empty message stream; if it's empty, (re-)open the
+      // channel — up to 2 attempts — and only then give up with a crisp
+      // "page stuck" error instead of fake-empty results.
+      const streamCount = () => document.querySelectorAll('[data-tid="channel-pane-message"]').length;
       const alreadyHere = document.title.toLowerCase().includes(cLower);
-      let waitedMs = 0;
-      if (!alreadyHere) {
-        const oldKeys = new Set(
-          [...document.querySelectorAll('[data-tid="channel-pane-message"]')]
-            .map(e => e.id).filter(Boolean)
-        );
-        channel.click();
-        let switched = false;
-        for (let i = 0; i < 150; i++) {
-          await new Promise(r => setTimeout(r, 200));
-          waitedMs += 200;
-          const cur = [...document.querySelectorAll('[data-tid="channel-pane-message"]')]
-            .map(e => e.id).filter(Boolean);
-          if (cur.length > 0 && cur.some(k => !oldKeys.has(k))) { switched = true; break; }
+      let waitedMs = 0, switched = false, reopened = false;
+      if (!(alreadyHere && streamCount() > 0)) {
+        for (let attempt = 0; attempt < 2 && !switched; attempt++) {
+          const oldKeys = new Set(
+            [...document.querySelectorAll('[data-tid="channel-pane-message"]')].map(e => e.id).filter(Boolean)
+          );
+          try { channel.click(); } catch (e) {}
+          if (attempt > 0) reopened = true;
+          const t0 = Date.now();
+          while (Date.now() - t0 < 15000) {
+            await new Promise(r => setTimeout(r, 200));
+            waitedMs += 200;
+            const cur = [...document.querySelectorAll('[data-tid="channel-pane-message"]')].map(e => e.id).filter(Boolean);
+            // alreadyHere: accept any rendered message (re-click may not mint
+            // new ids); otherwise require a freshly-appeared message.
+            if (cur.length > 0 && (alreadyHere || cur.some(k => !oldKeys.has(k)))) { switched = true; break; }
+          }
         }
-        if (!switched) {
-          return { ok: false, error: 'Timed out waiting for channel to load (30s).' };
+        if (!switched && streamCount() === 0) {
+          return {
+            ok: false,
+            error: 'Teams channel pane never hydrated (page stuck / half-loaded) — the message stream did not render. This is NOT an empty channel. Reload the Teams tab and retry.',
+            channel: channelName,
+            channel_thread_id: channelThreadId,
+            reopened,
+            stream_count: 0,
+            title: document.title,
+          };
         }
       }
 
