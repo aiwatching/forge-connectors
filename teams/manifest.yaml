@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.3"
+version: "0.10.4"
 author: forge
 category: connector
 mode: browser-side
@@ -978,7 +978,7 @@ tools:
         required: false
       name:
         type: string
-        label: Chat name (optional — substring, case-insensitive). Used only when email is omitted.
+        label: Chat name (optional — substring, case-insensitive). Used only when email is omitted. Pass a SHORT clean display name (e.g. "Bin Xu") — no titles, parentheticals, or extra words; Teams autosuggest resolves a bare name fastest.
         required: false
     returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
     page:
@@ -993,7 +993,13 @@ tools:
       // Email is the canonical identifier — when set, skip the left-rail
       // (those are display names, ambiguous) and drive the search box
       // straight with the email string.
-      const searchQuery = email || name;
+      // Clean the typed query: Teams autosuggest resolves a bare name
+      // fast, but a decorated string (e.g. "Bin Xu (in message…)", trailing
+      // titles/parentheticals the caller tacked on) confuses it. Strip from
+      // the first parenthesis/bracket onward and collapse whitespace. Emails
+      // have no parens so they're untouched.
+      const clean = (s) => s.replace(/[([{].*$/, '').replace(/\s+/g, ' ').trim();
+      const searchQuery = clean(email || name);
       const skipLeftRail = !!email;
 
       // Overall deadline. The RPC layer kills us at 60s with an opaque
