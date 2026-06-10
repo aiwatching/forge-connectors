@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.7"
+version: "0.9.9"
 author: forge
 category: connector
 mode: browser-side
@@ -861,8 +861,8 @@ tools:
       on_target: "teams.microsoft.com"
       settle_after_load_ms: 5000
     script: |
-      const text = String(args.text || '').trim();
-      if (!text) return { ok: false, error: 'text is required and must be non-empty' };
+      const text = String(args.text || args.message || args.body || args.content || '').trim();
+      if (!text) return { ok: false, error: 'text is required and must be non-empty (accepts text / message / body / content)' };
       const email = String(args.email || '').trim();
       const name = String(args.name || '').trim();
       // Email is the canonical identifier — when set, skip the left-rail
@@ -871,10 +871,18 @@ tools:
       const searchQuery = email || name;
       const skipLeftRail = !!email;
 
-      // Wait for Teams ready
+      // Overall deadline. The RPC layer kills us at 60s with an opaque
+      // "timed out" — budget our own waits under that so we can return a
+      // crisp, actionable error (with hydration state) instead.
+      const DEADLINE = Date.now() + 48000;
+      const timeLeft = () => DEADLINE - Date.now();
+      const COMPOSER_SEL = '[role="textbox"][contenteditable="true"][data-tid="ckeditor"]';
+
+      // Wait for Teams ready (composer or left-rail). Capped so it can't eat
+      // the whole budget before we reach the send path.
       const readyStart = Date.now();
-      while (Date.now() - readyStart < 30000) {
-        if (document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]')) break;
+      while (Date.now() - readyStart < 15000) {
+        if (document.querySelector(COMPOSER_SEL)) break;
         if (document.querySelectorAll('[role="treeitem"][aria-level="2"]').length > 0 && name) break;
         await new Promise(r => setTimeout(r, 500));
       }
@@ -1047,14 +1055,51 @@ tools:
         }
       }
 
-      // Find composer (might have just remounted after switch)
-      let composer = document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]');
-      for (let i = 0; i < 30 && !composer; i++) {
-        await new Promise(r => setTimeout(r, 200));
-        composer = document.querySelector('[role="textbox"][contenteditable="true"][data-tid="ckeditor"]');
+      // Find composer (might have just remounted after switch). On a
+      // long-lived tab the channel pane sometimes never hydrates — composer
+      // stays null. Poll within budget; if still missing, attempt ONE SPA
+      // re-open of the current chat (re-click its left-rail item) to force a
+      // remount, then poll again. A true browser reload would self-heal more
+      // reliably but can't be done from inside the page (it destroys this
+      // script's context) — that belongs to the extension runner.
+      const waitComposer = async (maxMs) => {
+        const t0 = Date.now();
+        let c = document.querySelector(COMPOSER_SEL);
+        while (!c && Date.now() - t0 < maxMs && timeLeft() > 1000) {
+          await new Promise(r => setTimeout(r, 200));
+          c = document.querySelector(COMPOSER_SEL);
+        }
+        return c;
+      };
+      const hydrationSnapshot = () => ({
+        composer_present: !!document.querySelector(COMPOSER_SEL),
+        message_stream: !!document.querySelector('[data-tid="message-pane-list-runway"], [role="list"]'),
+        left_rail_items: document.querySelectorAll('[role="treeitem"][aria-level="2"]').length,
+        title: document.title,
+      });
+
+      let composer = await waitComposer(Math.min(6000, timeLeft()));
+      let reopened = false;
+      if (!composer && timeLeft() > 12000) {
+        // Re-open: click the left-rail item matching the open chat's title.
+        const titleHead = (document.title.split('|')[1] || '').trim().toLowerCase();
+        const rail = [...document.querySelectorAll('[role="treeitem"][aria-level="2"]')];
+        const target = titleHead
+          ? rail.find(t => (t.innerText || '').split('\n')[0].trim().toLowerCase().includes(titleHead))
+          : null;
+        if (target) {
+          try { target.click(); reopened = true; } catch {}
+          await new Promise(r => setTimeout(r, 1000));
+          composer = await waitComposer(Math.min(8000, timeLeft()));
+        }
       }
       if (!composer) {
-        return { ok: false, error: 'Compose box not found after waiting.' };
+        return {
+          ok: false,
+          error: 'Teams composer never mounted — page stuck / unhydrated (not a wording problem; do NOT retry this run). The next scheduled run will try a freshly-loaded tab.',
+          reopened,
+          hydration: hydrationSnapshot(),
+        };
       }
 
       // Inject text FIRST. The Send button (sendMessageCommands-send) only
