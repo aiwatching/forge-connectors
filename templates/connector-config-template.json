@@ -1,6 +1,5 @@
 {
   "_README": "Public default connector template — applied at first onboarding when no enterprise key is registered. Fill in your own server URLs in each connector's base_url; the ${...} placeholders are prompted for once and reused everywhere. Existing non-empty values in your installed config are NEVER overwritten by re-importing.",
-
   "_prompts": {
     "gitlab_pat": {
       "label": "GitLab Personal Access Token",
@@ -36,7 +35,6 @@
       "required": false
     }
   },
-
   "gitlab": {
     "config": {
       "base_url": "",
@@ -44,35 +42,24 @@
     },
     "enabled": true
   },
-
   "github-api": {
     "config": {
       "token": "${github_pat}"
     },
     "enabled": true
   },
-
-  "mantis": {
-    "config": {
-      "base_url": ""
-    },
-    "enabled": true
-  },
-
   "teams": {
     "config": {
       "base_url": "https://teams.microsoft.com/"
     },
     "enabled": true
   },
-
   "jenkins": {
     "config": {
       "instances": "[{\"name\":\"default-jenkins\",\"base_url\":\"\",\"username\":\"${jenkins_username}\",\"api_token\":\"${jenkins_api_token}\"}]"
     },
     "enabled": true
   },
-
   "blackduck": {
     "config": {
       "base_url": "",
