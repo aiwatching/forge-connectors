@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.2"
+version: "0.10.3"
 author: forge
 category: connector
 mode: browser-side
@@ -1110,50 +1110,61 @@ tools:
               await new Promise(r => setTimeout(r, 40));
             }
 
-            // Wait for the suggestion popup to populate (Teams backend call
-            // takes ~500-2000ms over corp network).
-            let popup = null;
-            for (let i = 0; i < 40; i++) {
+            const lowerQuery = searchQuery.toLowerCase();
+            // Teams pops a "Search for '<q>' in messages" / "Messages" /
+            // "Files" / "See more results" COMMAND row almost instantly —
+            // before the actual people/chat suggestions arrive from the
+            // backend. Clicking one opens a search-results view, not a chat,
+            // so the old code (break on any popup text, then pick the first
+            // row containing the query) would grab that junk row → chat never
+            // switches → 60s timeout, and search_picked showed "…in messages".
+            // Skip command rows and poll until a REAL matching row appears.
+            const isCommandRow = (t) =>
+              !t ||
+              /\bin (messages?|chat|files|people)\b/i.test(t) ||
+              /^(search\b|messages$|files$|people$|chats$|see (more|all))/i.test(t);
+            const SEL = '[role="option"], [data-tid^="search-suggestion"], [data-tid$="-result"], li, button, div[tabindex="-1"]';
+            const collect = () => {
+              const popup = document.querySelector('[data-tid="ms-searchux-popup"]');
+              if (!popup) return { popup: null, cands: [] };
+              const seen = new Set(); const cands = [];
+              for (const el of popup.querySelectorAll(SEL)) {
+                const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                if (!txt || seen.has(txt) || txt.length > 200) continue;
+                seen.add(txt);
+                if (isCommandRow(txt)) continue;            // drop "…in messages" etc.
+                if ((txt + ' ' + aria).toLowerCase().includes(lowerQuery)) cands.push({ el, text: txt });
+                if (cands.length >= 8) break;
+              }
+              return { popup, cands };
+            };
+            // Poll up to ~12s for a non-command matching row (don't settle for
+            // the instant command-only popup).
+            let popup = null, candidates = [];
+            for (let i = 0; i < 60; i++) {
               await new Promise(r => setTimeout(r, 200));
-              popup = document.querySelector('[data-tid="ms-searchux-popup"]');
-              if (popup && (popup.innerText || '').trim().length > 30) break;
+              const r = collect();
+              popup = r.popup;
+              if (r.cands.length) { candidates = r.cands; break; }
             }
             if (!popup) {
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              return { ok: false, error: 'Search popup did not appear within 8s', query: searchQuery };
+              return { ok: false, error: 'Search popup did not appear within 12s', query: searchQuery };
             }
-
-            // Match strategy:
-            //   - When searching by email, prefer the row whose innerText
-            //     (or aria-label) literally contains the email — Teams
-            //     surfaces the email beneath the display name. Falls back
-            //     to first row.
-            //   - When searching by name, match by substring as before.
-            const lowerQuery = searchQuery.toLowerCase();
-            const allRows = [...popup.querySelectorAll('[role="option"], [data-tid^="search-suggestion"], [data-tid$="-result"], li, button, div[tabindex="-1"]')];
-            const seenTexts = new Set();
-            const candidates = [];
-            for (const el of allRows) {
-              const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
-              const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-              if (!txt || seenTexts.has(txt) || txt.length > 200) continue;
-              seenTexts.add(txt);
-              const haystack = (txt + ' ' + aria).toLowerCase();
-              if (haystack.includes(lowerQuery)) candidates.push({ el, text: txt });
-              if (candidates.length >= 8) break;
-            }
-            // Email mode: if no row contains the email verbatim (Teams may
-            // hide email in tooltip / details), accept the first popup
-            // result rather than failing — backend already filtered to a
-            // matching person.
-            if (email && candidates.length === 0 && allRows.length > 0) {
-              const first = allRows.find((el) => ((el.innerText || '').trim().length > 0));
-              if (first) candidates.push({ el: first, text: (first.innerText || '').trim().split('\n')[0] });
+            // Email mode fallback: backend already filtered to the person, so
+            // if no row literally contains the email, take the first
+            // non-command row rather than failing.
+            if (email && candidates.length === 0) {
+              for (const el of popup.querySelectorAll(SEL)) {
+                const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                if (txt && !isCommandRow(txt) && txt.length <= 200) { candidates.push({ el, text: txt }); break; }
+              }
             }
             if (candidates.length === 0) {
               const preview = (popup.innerText || '').slice(0, 400);
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-              return { ok: false, error: `Search popup had no item matching "${searchQuery}"`, popup_text_preview: preview };
+              return { ok: false, error: `Search popup had no person/chat row matching "${searchQuery}" (only command rows).`, popup_text_preview: preview };
             }
             searchPicked = candidates[0].text;
             resolveTier = 'search';
