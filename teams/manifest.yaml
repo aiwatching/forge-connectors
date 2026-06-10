@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.9"
+version: "0.10.0"
 author: forge
 category: connector
 mode: browser-side
@@ -310,14 +310,33 @@ tools:
       //    human "Yesterday 5:27 PM" timestamp text. Attachments + pasted
       //    screenshots matter for issue analysis — images expose the REAL
       //    data-orig-src (asyncgw AMS URL), not the useless blob: src.
+      // Real SharePoint file URL lives in React props, not the DOM — walk
+      // the card's fiber and match by filename. object_url → onedrive.download_file.
+      const _fiberOf = (n) => { const k = Object.keys(n).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')); return k ? n[k] : null; };
+      const _urlForName = (g, name) => {
+        const want = (name || '').toLowerCase(); let best = null, any = null; const seen = new Set();
+        const scan = (o, d) => {
+          if (!o || d > 4 || typeof o !== 'object' || seen.has(o)) return; seen.add(o);
+          for (const k of Object.keys(o)) {
+            let v; try { v = o[k]; } catch (e) { continue; }
+            if (typeof v === 'string' && /^https?:\/\/[^ ]*sharepoint/i.test(v)) {
+              if (!any) any = v;
+              try { if (decodeURIComponent(new URL(v).pathname).toLowerCase().endsWith(want)) best = v; } catch (e) {}
+            } else if (v && typeof v === 'object' && d < 4) scan(v, d + 1);
+          }
+        };
+        let f = _fiberOf(g);
+        for (let i = 0; i < 10 && f && !best; i++, f = f.return) { if (f.memoizedProps) scan(f.memoizedProps, 0); }
+        return best || any || null;
+      };
       const extractAttachments = (root) => {
         const out = [];
         root.querySelectorAll('[data-tid="file-attachment-grid"] [role="group"][aria-label]').forEach(g => {
           const lines = (g.getAttribute('aria-label') || '').split('\n').map(s => s.trim()).filter(Boolean);
           const nm = lines[0] || '';
           if (!nm || /toolbar/i.test(nm)) return;
-          const url = lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
-          out.push({ name: nm, url });
+          const object_url = _urlForName(g, nm) || lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
+          out.push({ name: nm, object_url, url: object_url });
         });
         return out;
       };
@@ -494,14 +513,37 @@ tools:
       // visible src is a session-scoped blob: that's useless outside the
       // page). Scope each extractor to a node so replies don't leak the
       // parent post's media.
+      // The visible file card only shows the filename; the real SharePoint
+      // URL lives in React props. urlForName walks the card's fiber and
+      // picks the sharepoint URL whose path ends with this file's name
+      // (a message with N files holds all N URLs on a shared ancestor —
+      // matching by name keeps each card's own link). Hand object_url to
+      // onedrive.download_file to pull the bytes.
+      const _fiberOf = (n) => { const k = Object.keys(n).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')); return k ? n[k] : null; };
+      const _urlForName = (g, name) => {
+        const want = (name || '').toLowerCase(); let best = null, any = null; const seen = new Set();
+        const scan = (o, d) => {
+          if (!o || d > 4 || typeof o !== 'object' || seen.has(o)) return; seen.add(o);
+          for (const k of Object.keys(o)) {
+            let v; try { v = o[k]; } catch (e) { continue; }
+            if (typeof v === 'string' && /^https?:\/\/[^ ]*sharepoint/i.test(v)) {
+              if (!any) any = v;
+              try { if (decodeURIComponent(new URL(v).pathname).toLowerCase().endsWith(want)) best = v; } catch (e) {}
+            } else if (v && typeof v === 'object' && d < 4) scan(v, d + 1);
+          }
+        };
+        let f = _fiberOf(g);
+        for (let i = 0; i < 10 && f && !best; i++, f = f.return) { if (f.memoizedProps) scan(f.memoizedProps, 0); }
+        return best || any || null;
+      };
       const extractAttachments = (root) => {
         const out = [];
         root.querySelectorAll('[data-tid="file-attachment-grid"] [role="group"][aria-label]').forEach(g => {
           const lines = (g.getAttribute('aria-label') || '').split('\n').map(s => s.trim()).filter(Boolean);
           const name = lines[0] || '';
           if (!name || /toolbar/i.test(name)) return;
-          const url = lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
-          out.push({ name, url });
+          const object_url = _urlForName(g, name) || lines.find(l => /^https?:\/\//.test(l)) || g.querySelector('a[href]')?.getAttribute('href') || null;
+          out.push({ name, object_url, url: object_url });
         });
         return out;
       };
@@ -808,6 +850,60 @@ tools:
         },
         ckeditor_classes_seen: [...document.querySelectorAll('[data-tid="ckeditor"]')].map(e => e.className.toString().slice(0, 30)).slice(0, 3),
         time_ms: Date.now() - t0,
+      };
+
+  download_image:
+    description: |
+      Download an inline image / pasted screenshot from a Teams message to
+      Forge's tmp/ dir, so it can be fed to vision or analyzed. Pass the
+      image `url` from a read_channel / read_chat `images[].url` (the AMS
+      `data-orig-src`). Result's `_files[0].path` is a tmp/ path — read it
+      with read_forge_file (as_base64) or hand it to a vision model.
+
+      NOTE: this is for INLINE images (pasted screenshots), which live on
+      Teams' own AMS host and are fetchable here. A file attachment that
+      happens to be an image (.png/.jpg in the attachment grid) is a
+      SharePoint file — use its attachment `object_url` with
+      onedrive.download_file instead.
+    parameters:
+      url:
+        type: string
+        label: Image URL
+        description: "The AMS image URL from a read_channel/read_chat images[].url (data-orig-src)."
+        required: true
+      filename:
+        type: string
+        label: Filename
+        description: "Optional saved filename. Defaults to a name derived from the URL."
+        required: false
+    returns: "{ _files: [{ filename, path, file_url, size_bytes, content_type }] }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+    script: |
+      const raw = String(args.url || '').trim();
+      if (!raw) return { error: 'url is required (a read_channel/read_chat images[].url)' };
+      // Inline Teams images are served from the AMS host (asm.skype.com);
+      // a credentialed fetch from the Teams origin succeeds (verified) even
+      // though it's cross-origin, because AMS allows it.
+      const r = await fetch(raw, { method: 'GET', credentials: 'include' });
+      if (!r.ok) return { error: 'image fetch HTTP ' + r.status, status: r.status };
+      const contentType = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      const ext = (contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+      let serverName = '';
+      const cd = r.headers.get('content-disposition') || '';
+      const m = cd.match(/filename\*?=(?:utf-8''|")?([^";]+)/i);
+      if (m) { try { serverName = decodeURIComponent(m[1]); } catch (e) { serverName = m[1]; } }
+      const filename = (args.filename || serverName || ('teams-image.' + ext)).replace(/[\0/\\]/g, '_');
+      const buf = await r.arrayBuffer();
+      const u8 = new Uint8Array(buf);
+      let bin = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < u8.length; i += CHUNK) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+      return {
+        ok: true,
+        _files: [{ filename: filename, content_base64: btoa(bin), content_type: contentType }],
+        size_bytes: u8.length,
       };
 
   send_message:

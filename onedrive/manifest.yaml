@@ -1,7 +1,7 @@
 id: onedrive
 name: OneDrive (SharePoint)
 icon: "☁️"
-version: "0.2.6"
+version: "0.3.0"
 author: forge
 category: connector
 mode: browser-side
@@ -27,8 +27,9 @@ description: |
 
 catalog_summary: |
   Read + write files on a SharePoint team site (OneDrive for Business).
-  3 tools: create_folder, upload_file, read_file. Rides existing
-  SharePoint cookies — no PAT stored.
+  4 tools: create_folder, upload_file, read_file, download_file (any
+  SharePoint URL → tmp/, e.g. a Teams attachment's object_url). Rides
+  existing SharePoint cookies — no PAT stored.
 
 settings:
   base_url:
@@ -378,3 +379,77 @@ tools:
           server_relative_url: serverRel,
         };
       }
+
+  download_file:
+    description: |
+      Download ANY SharePoint file by its full URL to Forge's tmp/ dir for
+      reading/analysis. Pass the `url` a Teams attachment exposes (the
+      teams.read_channel / read_chat attachments carry an `object_url`
+      pointing at the file in SharePoint). The bytes are saved server-side
+      (NOT returned through chat) — the result's `_files[0].path` is a tmp/
+      path you then open with read_forge_file, or, for an archive
+      (.zip/.tar/.gz), unpack with extract_archive first.
+
+      The file must live on the SAME SharePoint host as this connector's
+      base_url (e.g. company.sharepoint.com). A personal-OneDrive URL
+      (company-my.sharepoint.com) is a different origin and will error —
+      that's a browser cross-origin limit, not a bug.
+    parameters:
+      url:
+        type: string
+        label: SharePoint file URL
+        description: "Full https URL to the file (the object_url from a Teams attachment, or any /sites/<Site>/.../file.ext link)."
+        required: true
+      filename:
+        type: string
+        label: Filename
+        description: "Optional override for the saved filename. Defaults to the name in the URL / content-disposition."
+        required: false
+    returns: "{ _files: [{ filename, path, file_url, size_bytes, content_type }] }"
+    page:
+      url: "{base_url}"
+      on_target: "sharepoint.com"
+    script: |
+      const raw = String(args.url || '').trim();
+      if (!raw) return { error: 'url is required (the SharePoint file URL / Teams attachment object_url)' };
+      let u;
+      try { u = new URL(raw); } catch (e) { return { error: 'invalid url: ' + raw }; }
+      // Same-origin gate: cross-origin fetch (e.g. -my personal host) is
+      // blocked by the browser, so fail with a clear reason rather than an
+      // opaque "Failed to fetch".
+      if (u.origin !== location.origin) {
+        return { error: `file host ${u.origin} ≠ this site's origin ${location.origin}. download_file only works for files on the same SharePoint host as base_url.` };
+      }
+      // pathname is percent-encoded; decode to the true server-relative path,
+      // then re-encode as the SourceUrl param for download.aspx (which serves
+      // any file by server-relative path and sets a filename in
+      // content-disposition).
+      const serverRel = decodeURIComponent(u.pathname);
+      const siteSeg = location.pathname.match(/^(\/sites\/[^/]+)/);
+      const sitePrefix = siteSeg ? siteSeg[1] : '';
+      const dl = location.origin + sitePrefix + '/_layouts/15/download.aspx?SourceUrl=' + encodeURIComponent(serverRel);
+      const r = await fetch(dl, { method: 'GET', credentials: 'include' });
+      if (!r.ok) {
+        let body = ''; try { body = (await r.text()).slice(0, 200); } catch {}
+        return { error: `download HTTP ${r.status}`, status: r.status, body, server_relative_url: serverRel };
+      }
+      // Prefer explicit filename → content-disposition → last path segment.
+      let serverName = '';
+      const cd = r.headers.get('content-disposition') || '';
+      const m = cd.match(/filename\*?=(?:utf-8''|")?([^";]+)/i);
+      if (m) { try { serverName = decodeURIComponent(m[1]); } catch (e) { serverName = m[1]; } }
+      const filename = (args.filename || serverName || serverRel.split('/').pop() || 'download.bin').replace(/[\0/\\]/g, '_');
+      const contentType = (r.headers.get('content-type') || '').split(';')[0] || 'application/octet-stream';
+      const buf = await r.arrayBuffer();
+      const u8 = new Uint8Array(buf);
+      let bin = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < u8.length; i += CHUNK) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+      // Forge's _files channel writes this to tmp/ and strips the base64
+      // before the model sees it.
+      return {
+        ok: true,
+        _files: [{ filename: filename, content_base64: btoa(bin), content_type: contentType }],
+        size_bytes: u8.length,
+        server_relative_url: serverRel,
+      };

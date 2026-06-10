@@ -25,7 +25,7 @@
       "id": "teams",
       "name": "Microsoft Teams",
       "icon": "💬",
-      "version": "0.9.9",
+      "version": "0.10.0",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
       "min_forge_version": "0.8.0"
@@ -52,9 +52,9 @@
       "id": "onedrive",
       "name": "OneDrive (SharePoint)",
       "icon": "☁️",
-      "version": "0.2.6",
+      "version": "0.3.0",
       "author": "forge",
-      "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 3 tools: create_folder, upload_file, read_file. No PAT stored — rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
+      "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 4 tools: create_folder, upload_file, read_file, download_file (any SharePoint URL → Forge tmp/, e.g. a Teams attachment's object_url). No PAT stored — rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
       "min_forge_version": "0.10.51"
     }
   ]
