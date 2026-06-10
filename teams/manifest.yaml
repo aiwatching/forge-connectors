@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.9.6"
+version: "0.9.7"
 author: forge
 category: connector
 mode: browser-side
@@ -1066,12 +1066,18 @@ tools:
       composer.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
       await new Promise(r => setTimeout(r, 300));
 
+      // Verify the paste landed — but compare with whitespace COLLAPSED.
+      // CKEditor 5 reflows newlines into <p> blocks, so a multi-line text
+      // with "\n\n" comes back as several "\n" and a strict includes()
+      // false-fails even though the content is all there. Collapse runs of
+      // whitespace on both sides before comparing.
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
       const composerText = composer.innerText.trim();
-      if (!composerText.includes(text)) {
+      if (!norm(composerText).includes(norm(text))) {
         return {
           ok: false,
           error: 'Composer did not accept the input — CKEditor may have rejected the paste.',
-          composer_text: composerText.slice(0, 100),
+          composer_text: composerText.slice(0, 200),
         };
       }
 
@@ -1111,7 +1117,8 @@ tools:
       await new Promise(r => setTimeout(r, 500));
 
       // Verify it actually sent — composer should be empty again.
-      const stillThere = (composer.innerText || '').includes(text.slice(0, 30));
+      // Normalize whitespace + compare a leading slice (multi-line safe).
+      const stillThere = norm(composer.innerText).includes(norm(text).slice(0, 30));
       if (stillThere) {
         return { ok: false, error: `Message typed but send did not go through (tried ${sentVia}). Composer still holds the text.`, sent_via: sentVia };
       }
