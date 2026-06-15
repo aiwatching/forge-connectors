@@ -1,10 +1,13 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.8"
+version: "0.1.9"
 author: forge
 category: connector
 mode: server-side
+# Jenkins appliances often ship a self-signed TLS cert — skip cert verification.
+http:
+  verify_tls: false
 description: |
   Jenkins REST API connector — trigger builds, monitor status, fetch
   console logs and artifacts. All requests run inside Forge (no browser
