@@ -6,16 +6,16 @@
     {
       "id": "jenkins",
       "name": "Jenkins",
-      "icon": "🔧",
-      "version": "0.1.8",
+      "icon": "\ud83d\udd27",
+      "version": "0.1.9",
       "author": "forge",
-      "description": "Jenkins REST API connector — trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
+      "description": "Jenkins REST API connector \u2014 trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
       "min_forge_version": "0.9.17"
     },
     {
       "id": "gitlab",
       "name": "GitLab",
-      "icon": "🦊",
+      "icon": "\ud83e\udd8a",
       "version": "1.8.0",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
@@ -24,7 +24,7 @@
     {
       "id": "teams",
       "name": "Microsoft Teams",
-      "icon": "💬",
+      "icon": "\ud83d\udcac",
       "version": "0.10.4",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
@@ -33,28 +33,28 @@
     {
       "id": "github-api",
       "name": "GitHub API",
-      "icon": "🐙",
+      "icon": "\ud83d\udc19",
       "version": "0.2.1",
       "author": "forge",
-      "description": "GitHub REST API connector — runs entirely server-side. Optional PAT for private repos / higher rate limits.",
+      "description": "GitHub REST API connector \u2014 runs entirely server-side. Optional PAT for private repos / higher rate limits.",
       "min_forge_version": "0.8.0"
     },
     {
       "id": "blackduck",
       "name": "Black Duck",
-      "icon": "🦆",
+      "icon": "\ud83e\udd86",
       "version": "0.1.2",
       "author": "forge",
-      "description": "Synopsys Black Duck SCA — 6 read tools (projects, versions, risk profile, vulnerable BOM components, components). Uses Forge core's new bearer-token-exchange auth: configure base_url + long-lived API token, Forge auto-exchanges for ~2h bearer JWT and caches.",
+      "description": "Synopsys Black Duck SCA \u2014 6 read tools (projects, versions, risk profile, vulnerable BOM components, components). Uses Forge core's new bearer-token-exchange auth: configure base_url + long-lived API token, Forge auto-exchanges for ~2h bearer JWT and caches.",
       "min_forge_version": "0.10.25"
     },
     {
       "id": "onedrive",
       "name": "OneDrive (SharePoint)",
-      "icon": "☁️",
+      "icon": "\u2601\ufe0f",
       "version": "0.3.0",
       "author": "forge",
-      "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 4 tools: create_folder, upload_file, read_file, download_file (any SharePoint URL → Forge tmp/, e.g. a Teams attachment's object_url). No PAT stored — rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
+      "description": "Read + write files in a SharePoint team site (OneDrive for Business) via the user's logged-in browser session. 4 tools: create_folder, upload_file, read_file, download_file (any SharePoint URL \u2192 Forge tmp/, e.g. a Teams attachment's object_url). No PAT stored \u2014 rides existing SharePoint cookies. Endpoints captured from real SharePoint web traffic.",
       "min_forge_version": "0.10.51"
     }
   ]
