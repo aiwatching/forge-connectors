@@ -1,10 +1,28 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.8.0"
+version: "1.8.1"
 author: forge
 category: connector
 mode: server-side
+
+# Home Kanban card (read by Forge's kanban seeder, ignored by the connector
+# loader). The card renders a WidgetSpec produced from the prompt below.
+kanban:
+  cards:
+    - title: "MRs — load & release watch"
+      icon: "🦊"
+      period_sec: 1800
+      prompt: |
+        Show my merge-request load. Call list_my_mrs (state=opened) and
+        list_authored_mrs (state=opened); put a metric_row at the top with
+        counts: assigned to me / authored by me. Then highlight MRs aimed
+        at the upcoming release branch: call list_authored_mrs and
+        list_my_mrs again with target_branch='7.6' (if that returns
+        nothing, also try 'release/7.6'). List each release-bound MR as an
+        item: title + project, link to its web_url, and badge it — red
+        'CONFLICTS' or 'DRAFT' where applicable, blue 'REVIEW' otherwise.
+        Newest first. English.
 description: |
   GitLab REST API connector (server-side via Personal Access Token).
   Covers issues, merge requests, projects, pipelines, branches, files,
