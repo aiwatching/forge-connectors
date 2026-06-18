@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.8.2"
+version: "1.8.3"
 author: forge
 category: connector
 mode: server-side
@@ -29,7 +29,7 @@ kanban:
         item show title + project, link to its web_url, and add a red
         'CONFLICTS' or 'DRAFT' badge where applicable. De-duplicate an MR that
         falls in several groups (show it once with the most important badge).
-        Cap ~8 items, newest first. English.
+        Cap ~8 items, newest first. Set the widget "accent" to "violet". English.
 description: |
   GitLab REST API connector (server-side via Personal Access Token).
   Covers issues, merge requests, projects, pipelines, branches, files,
