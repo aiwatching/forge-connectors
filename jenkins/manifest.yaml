@@ -1,10 +1,31 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.9"
+version: "0.1.10"
 author: forge
 category: connector
 mode: server-side
+
+# Home Kanban card (read by Forge's kanban seeder, ignored by the loader).
+kanban:
+  cards:
+    - title: "Jenkins — build status"
+      icon: "⚙️"
+      period_sec: 900
+      mode: task
+      prompt: |
+        Show Jenkins job build status. Get data with mcp__forge__call_connector:
+        plugin_id='jenkins', tool='list_jobs', args={} (default instance; pass
+        folder_path if a team folder is used). The `color` field encodes the
+        last build: blue=SUCCESS, red=FAILURE, yellow=UNSTABLE, grey/disabled,
+        and a "_anime" suffix means currently building.
+        Set accent "blue". Be terse.
+        - callout (red) if any job color is red / red_anime: "N failing builds".
+        - metric_row: passing / failing / building counts.
+        - list (cap ~10, failing first): text=job name, sub=last result,
+          badge green 'PASS' / red 'FAIL' / amber 'UNSTABLE' / gray 'BUILD',
+          link to the job url.
+
 # Jenkins appliances often ship a self-signed TLS cert — skip cert verification.
 http:
   verify_tls: false

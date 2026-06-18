@@ -7,7 +7,7 @@
       "id": "jenkins",
       "name": "Jenkins",
       "icon": "\ud83d\udd27",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "author": "forge",
       "description": "Jenkins REST API connector \u2014 trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
       "min_forge_version": "0.9.17"
