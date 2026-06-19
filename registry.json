@@ -7,7 +7,7 @@
       "id": "jenkins",
       "name": "Jenkins",
       "icon": "\ud83d\udd27",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "author": "forge",
       "description": "Jenkins REST API connector \u2014 trigger builds, monitor status, fetch console logs and artifacts. Server-side via API token. Folder-nested jobs supported. Multiple Jenkins instances in one install.",
       "min_forge_version": "0.9.17"
@@ -16,7 +16,7 @@
       "id": "gitlab",
       "name": "GitLab",
       "icon": "\ud83e\udd8a",
-      "version": "1.8.4",
+      "version": "1.8.5",
       "author": "forge",
       "description": "GitLab REST API connector via Personal Access Token (encrypted at rest). 25+ tools for issues, MRs, projects, pipelines, branches, files, notes, todos.",
       "min_forge_version": "0.8.0"

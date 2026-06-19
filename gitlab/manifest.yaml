@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.8.4"
+version: "1.8.5"
 author: forge
 category: connector
 mode: server-side
@@ -15,11 +15,18 @@ kanban:
       period_sec: 1800
       mode: task          # multi-tool gather → render via CLI task (inline LLM-JSON was unreliable)
       prompt: |
-        Show my GitLab merge-request load. Gather all three relationships
-        (state=opened):
+        Show my GitLab merge-request load.
+
+        # === Editable variables (change the values; keep the names) ===
+        BRANCHES = []   # only MRs targeting these branches, e.g. ["main","release/7.6"]; [] = all
+        # =============================================================
+
+        Gather all three relationships (state=opened):
         - Assigned to me:        list_my_mrs(state=opened)
         - Authored by me:        list_authored_mrs(state=opened)
         - Review requested of me: search_mrs(reviewer_username='me', state='opened')
+        If BRANCHES is non-empty, KEEP ONLY MRs whose target_branch is one of
+        BRANCHES (drop the rest before counting/listing); [] = no branch filter.
         Put a metric_row at the top with three counts: assigned / authored /
         review.
         Then LIST the actual MRs (do not just count) as items, grouped in this

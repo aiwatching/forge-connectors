@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.11"
+version: "0.1.12"
 author: forge
 category: connector
 mode: server-side
@@ -15,11 +15,19 @@ kanban:
       mode: task
       prompt: |
         Show Jenkins jobs that are CURRENTLY BUILDING, plus the latest status
-        of recently-active jobs. Get data with mcp__forge__call_connector:
-        plugin_id='jenkins', tool='list_jobs', args={} (default instance; pass
-        folder_path if a team folder is used). The `color` field: a "_anime"
-        suffix = building now; blue=SUCCESS, red=FAILURE, yellow=UNSTABLE,
-        grey/disabled. Set accent "blue". Be terse.
+        of recently-active jobs.
+
+        # === Editable variables (change the values; keep the names) ===
+        JOBS        = []   # only these job names (substring match), e.g. ["nightly","release-7.6"]; [] = all
+        FOLDER_PATH = ""   # Jenkins folder path if jobs live in a team folder; "" = root
+        # =============================================================
+
+        Get data with mcp__forge__call_connector: plugin_id='jenkins',
+        tool='list_jobs', args={folder_path: <the FOLDER_PATH value>} (default
+        instance). If JOBS is non-empty, KEEP ONLY jobs whose name contains one
+        of the JOBS entries (case-insensitive); [] = all jobs. The `color`
+        field: a "_anime" suffix = building now; blue=SUCCESS, red=FAILURE,
+        yellow=UNSTABLE, grey/disabled. Set accent "blue". Be terse.
         - callout: amber "N jobs building" if any *_anime; red "N failing" if any red.
         - metric_row: building / failing / passing.
         - list (cap ~10, BUILDING first, then failing): text=job name,
