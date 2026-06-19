@@ -14,34 +14,32 @@ tab_strategy: persistent
 # real team + channel names. Runs as a CLI task (Teams is a heavy SPA).
 kanban:
   cards:
-    - title: "Teams — channel watch"
+    - title: "Teams — channels watch"
       icon: "💬"
       period_sec: 1800
       mode: task
       prompt: |
-        Monitor a Microsoft Teams channel and summarize what's new.
+        Monitor one or more Microsoft Teams channels and summarize what's new.
 
         # === Editable variables (change the values; keep the names) ===
-        TEAM         = ""    # team name substring, e.g. "FortiNAC"
-        CHANNEL      = ""    # channel name substring, e.g. "General"
-        MAX_MESSAGES = 25    # how many recent posts to pull
+        CHANNELS     = ["FortiNAC / General"]   # each entry: "Team / Channel"
+        MAX_MESSAGES = 15                        # recent posts per channel
         # =============================================================
 
-        Pull the latest posts with mcp__forge__call_connector:
-        plugin_id='teams', tool='read_channel',
-        args={team: <the TEAM value above>, channel: <the CHANNEL value above>,
-        max_messages: <the MAX_MESSAGES value above>}. (If TEAM or CHANNEL is
-        empty, render a single amber callout "Set TEAM and CHANNEL on this card"
-        and STOP.)
+        If CHANNELS is empty, render a single amber callout "Set CHANNELS on
+        this card" and STOP. Otherwise, for EACH entry split it on " / " into
+        <team> and <channel>, then call mcp__forge__call_connector plugin_id='teams'
+        tool='read_channel' args={team:<team>, channel:<channel>,
+        max_messages: <the MAX_MESSAGES value>}. Collect all posts, tagging each
+        with its source channel.
 
-        Render the most recent posts newest-first as a list: each item =
-        author + a one-line gist of the post, and href = that post's `post_url`
-        (read_channel returns it per post) so each row jumps to the message in
-        Teams. Badge anything that looks like an open question, escalation, or
-        direct ask to someone as red 'NEEDS REPLY'; badge posts with
-        attachments/screenshots amber 'HAS FILES'. Put a metric_row at the top:
-        total posts / posts with replies / unanswered questions. Set the widget
-        "accent" to "purple". Keep it scannable and English.
+        Render ONE list, newest-first across all channels: each item =
+        "<channel> · <author>" + a one-line gist, href = that post's `post_url`
+        (read_channel returns it per post) so each row jumps to the message.
+        Badge open questions / escalations / direct asks red 'NEEDS REPLY';
+        posts with attachments/screenshots amber 'HAS FILES'. metric_row at top:
+        total posts / channels checked / unanswered questions. Set accent
+        "purple". English, scannable.
 
 description: |
   Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
