@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.8"
+version: "0.10.9"
 author: forge
 category: connector
 mode: browser-side
@@ -23,14 +23,19 @@ kanban:
 
         # === Editable variables (change the values; keep the names) ===
         CHANNELS     = ["FortiNAC / General"]   # each entry: "Team / Channel"
-        MAX_MESSAGES = 15                        # recent posts per channel
+        MAX_MESSAGES = 10                        # recent posts per channel
         # =============================================================
 
         If CHANNELS is empty, render a single amber callout "Set CHANNELS on
-        this card" and STOP. Otherwise, for EACH entry split it on " / " into
-        <team> and <channel>, then call mcp__forge__call_connector plugin_id='teams'
-        tool='read_channel' args={team:<team>, channel:<channel>,
-        max_messages: <the MAX_MESSAGES value>}. Collect all posts, tagging each
+        this card" and STOP. Otherwise process the entries ONE AT A TIME,
+        SEQUENTIALLY — wait for each read_channel to return before starting the
+        next. NEVER call read_channel in parallel: the connector drives a single
+        Teams tab, so concurrent calls collide and each times out (~60s). For
+        each entry split it on " / " into <team> and <channel>, then call
+        mcp__forge__call_connector plugin_id='teams' tool='read_channel'
+        args={team:<team>, channel:<channel>, max_messages: <the MAX_MESSAGES
+        value>}. If a call returns an error, note that channel as failed and
+        continue with the next; don't retry it. Collect all posts, tagging each
         with its source channel.
 
         Each post has: subject, author (who started the thread), body, timestamp,
@@ -692,8 +697,11 @@ tools:
         vp.scrollTop = vp.scrollHeight;              // jump to newest
         await new Promise(r => setTimeout(r, 700));
         grab();
+        // Cap scroll rounds so total tool time stays under the 60s RPC budget
+        // (hydrate + channel-switch already eat a chunk). Newest posts come
+        // first anyway, so a few rounds cover MAX_MESSAGES in practice.
         let lastSH = 0, dry = 0;
-        while (dry < 3 && scrollRounds < 40 && harvested.size < maxMessages) {
+        while (dry < 3 && scrollRounds < 12 && harvested.size < maxMessages) {
           scrollRounds++;
           vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.8);
           vp.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
