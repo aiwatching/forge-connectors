@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.5"
+version: "0.10.6"
 author: forge
 category: connector
 mode: browser-side
@@ -21,21 +21,27 @@ kanban:
       prompt: |
         Monitor a Microsoft Teams channel and summarize what's new.
 
-        >>> EDIT THESE TWO before running <<<
-        TEAM    = "<team name substring>"
-        CHANNEL = "<channel name substring>"
+        # === Editable variables (change the values; keep the names) ===
+        TEAM         = ""    # team name substring, e.g. "FortiNAC"
+        CHANNEL      = ""    # channel name substring, e.g. "General"
+        MAX_MESSAGES = 25    # how many recent posts to pull
+        # =============================================================
 
         Pull the latest posts with mcp__forge__call_connector:
         plugin_id='teams', tool='read_channel',
-        args={team: TEAM, channel: CHANNEL, max_messages: 25}.
+        args={team: <the TEAM value above>, channel: <the CHANNEL value above>,
+        max_messages: <the MAX_MESSAGES value above>}. (If TEAM or CHANNEL is
+        empty, render a single amber callout "Set TEAM and CHANNEL on this card"
+        and STOP.)
 
         Render the most recent posts newest-first as a list: each item =
-        author + a one-line gist of the post. Badge anything that looks
-        like an open question, escalation, or direct ask to someone as red
-        'NEEDS REPLY'; badge posts with attachments/screenshots amber
-        'HAS FILES'. Put a metric_row at the top: total posts / posts with
-        replies / unanswered questions. Set the widget "accent" to
-        "purple". Keep it scannable and English.
+        author + a one-line gist of the post, and href = that post's `post_url`
+        (read_channel returns it per post) so each row jumps to the message in
+        Teams. Badge anything that looks like an open question, escalation, or
+        direct ask to someone as red 'NEEDS REPLY'; badge posts with
+        attachments/screenshots amber 'HAS FILES'. Put a metric_row at the top:
+        total posts / posts with replies / unanswered questions. Set the widget
+        "accent" to "purple". Keep it scannable and English.
 
 description: |
   Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
@@ -442,7 +448,7 @@ tools:
         type: number
         description: "Cap on returned posts after collection. Defaults to max_messages."
         default: 20
-    returns: "{ ok, team, channel, channel_thread_id, scroll_rounds, posts: [{ subject, author, timestamp, body, attachments:[{name,url}], images:[{url,alt,width,height}], replies:[...] }], total }"
+    returns: "{ ok, team, channel, channel_thread_id, scroll_rounds, posts: [{ subject, author, timestamp, post_url, body, attachments:[{name,url}], images:[{url,alt,width,height}], replies:[...] }], total }"
     page:
       url: "{base_url}/v2/"
       on_target: "teams.microsoft.com"
@@ -637,8 +643,15 @@ tools:
         const replyIds = new Set(replyContainers.map(r => r.id));
         const ownScope = post.cloneNode(true);
         ownScope.querySelectorAll('[role="group"][id^="message-body-"]').forEach(r => { if (replyIds.has(r.id)) r.remove(); });
+        // Best-effort deep link to this post. Teams sometimes wraps the
+        // timestamp in an <a>, or exposes an /l/message/ permalink; fall back
+        // to the channel URL (location.href) so the link is never dead.
+        const tsEl = post.querySelector('[data-tid="timestamp"]');
+        const linkEl = post.querySelector('a[href*="/l/message/"], a[href*="/message/"]')
+          || (tsEl && tsEl.closest('a'));
+        const post_url = (linkEl && linkEl.href) || location.href;
         return {
-          mid, subject, author, timestamp: ts,
+          mid, subject, author, timestamp: ts, post_url,
           body: (bodyEl?.innerText || '').trim(),
           // Attachments from the LIVE post (fiber-backed object_url), excluding
           // reply cards. Images can stay on the cloned ownScope (attribute-based).
