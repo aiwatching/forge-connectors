@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.7"
+version: "0.10.8"
 author: forge
 category: connector
 mode: browser-side
@@ -33,13 +33,28 @@ kanban:
         max_messages: <the MAX_MESSAGES value>}. Collect all posts, tagging each
         with its source channel.
 
-        Render ONE list, newest-first across all channels: each item =
-        "<channel> · <author>" + a one-line gist, href = that post's `post_url`
-        (read_channel returns it per post) so each row jumps to the message.
-        Badge open questions / escalations / direct asks red 'NEEDS REPLY';
-        posts with attachments/screenshots amber 'HAS FILES'. metric_row at top:
-        total posts / channels checked / unanswered questions. Set accent
-        "purple". English, scannable.
+        Each post has: subject, author (who started the thread), body, timestamp,
+        post_url, attachments, and replies:[{author, body, timestamp}] (oldest→
+        newest). ANALYZE each thread — don't just echo the title:
+        - topic: one line on what the thread is actually about / the problem asked.
+        - answered?: are there replies? who gave the LAST reply (replies[-1].author)
+          and roughly when. If no replies → unanswered.
+        - needs reply?: TRUE when the thread is an open question / request / report
+          AND (no replies, OR the last message is from the original asker again, i.e.
+          a follow-up/ping with no answer after it). FALSE when the last reply
+          resolves it (e.g. an answer/ack from someone other than the asker, or
+          wording like "done/fixed/resolved/thanks").
+
+        Sort: NEEDS-REPLY threads first, then unanswered, then recently-active.
+        metric_row at top: total threads / needs-reply / answered.
+        list (cap ~10), each item:
+          - text: "<channel> · <topic>"
+          - sub: "asked by <author> · <N> replies · last: <last replier or '—'>"
+          - badge: red 'NEEDS REPLY' if needs-reply; green 'ANSWERED' if resolved;
+            gray 'FYI' otherwise. Add amber 'FILES' if attachments present.
+          - href: the post's post_url (jump to the message).
+        Set accent "purple". English, scannable. If a channel returned an error,
+        add one amber callout naming it and continue with the others.
 
 description: |
   Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
