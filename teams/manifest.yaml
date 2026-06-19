@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.6"
+version: "0.10.7"
 author: forge
 category: connector
 mode: browser-side
