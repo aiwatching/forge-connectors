@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.4"
+version: "0.10.5"
 author: forge
 category: connector
 mode: browser-side
@@ -9,6 +9,34 @@ runner: isolated
 # Teams web is slow to load — keep the tab Forge opens alive and reuse it
 # (host_match match) on subsequent calls instead of reopening every time.
 tab_strategy: persistent
+
+# Home Kanban default card. After adding it, edit the prompt to fill in the
+# real team + channel names. Runs as a CLI task (Teams is a heavy SPA).
+kanban:
+  cards:
+    - title: "Teams — channel watch"
+      icon: "💬"
+      period_sec: 1800
+      mode: task
+      prompt: |
+        Monitor a Microsoft Teams channel and summarize what's new.
+
+        >>> EDIT THESE TWO before running <<<
+        TEAM    = "<team name substring>"
+        CHANNEL = "<channel name substring>"
+
+        Pull the latest posts with mcp__forge__call_connector:
+        plugin_id='teams', tool='read_channel',
+        args={team: TEAM, channel: CHANNEL, max_messages: 25}.
+
+        Render the most recent posts newest-first as a list: each item =
+        author + a one-line gist of the post. Badge anything that looks
+        like an open question, escalation, or direct ask to someone as red
+        'NEEDS REPLY'; badge posts with attachments/screenshots amber
+        'HAS FILES'. Put a metric_row at the top: total posts / posts with
+        replies / unanswered questions. Set the widget "accent" to
+        "purple". Keep it scannable and English.
+
 description: |
   Microsoft Teams web (v2 UI). Reuses the user's logged-in session via
   the runner's ISOLATED world — page CSP doesn't apply, but window
