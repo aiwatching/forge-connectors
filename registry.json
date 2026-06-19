@@ -25,7 +25,7 @@
       "id": "teams",
       "name": "Microsoft Teams",
       "icon": "\ud83d\udcac",
-      "version": "0.10.9",
+      "version": "0.10.10",
       "author": "forge",
       "description": "Read + send messages in the Teams web client (v2 UI) via the user's logged-in session. Channels, group chats, 1:1 DMs.",
       "min_forge_version": "0.8.0"
