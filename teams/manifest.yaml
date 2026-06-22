@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.12"
+version: "0.10.13"
 author: forge
 category: connector
 mode: browser-side
@@ -496,16 +496,19 @@ tools:
         return m ? m[1] : null;
       };
 
-      // Wait for Teams to be ready (any channel treeitem present).
-      // Budget is tight: the whole tool must finish under the 60s RPC cap
-      // (ready-gate + channel-switch + scroll), so cap this at 15s.
+      // Wait for Teams to be ready (any channel treeitem present). Returns the
+      // instant channels appear, so a WARM tab is ~free; only a COLD tab (kanban
+      // opened a fresh Teams tab in the background) waits. Teams v2 cold-load +
+      // hydration routinely needs 20-30s, so a 15s cap was too tight and failed
+      // background cards — give cold hydration up to 30s. Channel-switch +
+      // scroll still self-bound the rest under the 60s RPC cap.
       const readyStart = Date.now();
-      while (Date.now() - readyStart < 15000) {
+      while (Date.now() - readyStart < 30000) {
         if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
       if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length === 0) {
-        return { ok: false, error: 'Teams did not finish loading (no channels in left rail in 15s). Open a Teams tab and let it load, then retry.' };
+        return { ok: false, error: 'Teams did not finish loading (no channels in left rail in 30s). Open a Teams tab and let it load, then retry.' };
       }
       _timing.ready_ms = Date.now() - _t0;
 
