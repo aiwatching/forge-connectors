@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.10"
+version: "0.10.11"
 author: forge
 category: connector
 mode: browser-side
@@ -367,8 +367,12 @@ tools:
       const _fiberOf = (n) => { const k = Object.keys(n).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')); return k ? n[k] : null; };
       const _urlForName = (g, name) => {
         const want = (name || '').toLowerCase(); let best = null, any = null; const seen = new Set();
+        let scanned = 0;
         const scan = (o, d) => {
-          if (!o || d > 4 || typeof o !== 'object' || seen.has(o)) return; seen.add(o);
+          // Hard node cap: React fibers are huge cyclic graphs; an unbounded
+          // walk per attachment is a primary read hang. 4000 nodes is plenty
+          // to find a sharepoint URL near the card.
+          if (!o || d > 4 || typeof o !== 'object' || seen.has(o) || ++scanned > 4000) return; seen.add(o);
           for (const k of Object.keys(o)) {
             let v; try { v = o[k]; } catch (e) { continue; }
             if (typeof v === 'string' && /^https?:\/\/[^ ]*sharepoint/i.test(v)) {
@@ -478,6 +482,13 @@ tools:
         return { ok: false, error: 'team and channel parameters are required' };
       }
       const tLower = teamName.toLowerCase(), cLower = channelName.toLowerCase();
+      // Self-bounding: the whole tool MUST return before the 60s RPC kill.
+      // We stamp phase timings and stop scrolling/parsing once the soft budget
+      // is hit, returning partial + _timing instead of hanging to a hard timeout.
+      const _t0 = Date.now();
+      const SOFT_BUDGET_MS = Math.min(55000, Number(args.budget_ms) || 45000);
+      const within = () => Date.now() - _t0 < SOFT_BUDGET_MS;
+      const _timing = {};
       const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
       const threadIdOf = (el) => {
         const v = el.getAttribute('data-fui-tree-item-value') || '';
@@ -496,6 +507,7 @@ tools:
       if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length === 0) {
         return { ok: false, error: 'Teams did not finish loading (no channels in left rail in 15s). Open a Teams tab and let it load, then retry.' };
       }
+      _timing.ready_ms = Date.now() - _t0;
 
       // Locate the channel by walking the flat tree in document order:
       // a channel belongs to the nearest preceding data-item-type="team".
@@ -580,6 +592,8 @@ tools:
         }
       }
 
+      _timing.switch_ms = (Date.now() - _t0) - (_timing.ready_ms || 0);
+
       // Attachments + pasted screenshots — critical for customer-issue
       // analysis. Attachments: filename (+ SharePoint link when present).
       // Images: data-orig-src is the REAL authenticated Teams AMS URL (the
@@ -595,8 +609,12 @@ tools:
       const _fiberOf = (n) => { const k = Object.keys(n).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')); return k ? n[k] : null; };
       const _urlForName = (g, name) => {
         const want = (name || '').toLowerCase(); let best = null, any = null; const seen = new Set();
+        let scanned = 0;
         const scan = (o, d) => {
-          if (!o || d > 4 || typeof o !== 'object' || seen.has(o)) return; seen.add(o);
+          // Hard node cap: React fibers are huge cyclic graphs; an unbounded
+          // walk per attachment is a primary read hang. 4000 nodes is plenty
+          // to find a sharepoint URL near the card.
+          if (!o || d > 4 || typeof o !== 'object' || seen.has(o) || ++scanned > 4000) return; seen.add(o);
           for (const k of Object.keys(o)) {
             let v; try { v = o[k]; } catch (e) { continue; }
             if (typeof v === 'string' && /^https?:\/\/[^ ]*sharepoint/i.test(v)) {
@@ -687,10 +705,19 @@ tools:
       // scroll height stops growing (reached the oldest) or we hit max_messages.
       const maxMessages = Math.max(1, Number(args.max_messages) || 20);
       const harvested = new Map();
-      const grab = () => document.querySelectorAll('[data-tid="channel-pane-message"]').forEach(p => {
-        const r = parsePost(p);
-        if (r.mid && !harvested.has(r.mid)) harvested.set(r.mid, r);
-      });
+      const grab = () => {
+        for (const p of document.querySelectorAll('[data-tid="channel-pane-message"]')) {
+          if (!within()) break;                       // stop heavy parse near budget
+          // Cheap mid first; skip re-parsing posts we already harvested. Without
+          // this, the expensive parsePost (fiber walk + cloneNode) re-ran on
+          // every visible post EVERY scroll round — the main 60s timeout cause.
+          const m = (p.id || '').match(/reply-chain-summary-(\d+)/);
+          const mid = m ? m[1] : (p.id || '');
+          if (mid && harvested.has(mid)) continue;
+          const r = parsePost(p);
+          if (r.mid && !harvested.has(r.mid)) harvested.set(r.mid, r);
+        }
+      };
       const vp = document.querySelector('[data-tid="channel-pane-viewport"]');
       let scrollRounds = 0;
       if (!vp || harvested.size >= maxMessages) {
@@ -703,7 +730,7 @@ tools:
         // (hydrate + channel-switch already eat a chunk). Newest posts come
         // first anyway, so a few rounds cover MAX_MESSAGES in practice.
         let lastSH = 0, dry = 0;
-        while (dry < 3 && scrollRounds < 12 && harvested.size < maxMessages) {
+        while (dry < 3 && scrollRounds < 12 && harvested.size < maxMessages && within()) {
           scrollRounds++;
           vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.8);
           vp.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
@@ -730,6 +757,11 @@ tools:
         scroll_rounds: scrollRounds,
         posts: ordered.slice(-(args.limit || maxMessages)),
         total: harvested.size,
+        // Self-bounding diagnostics: where the time went, and whether we
+        // stopped early on the soft budget (partial=true → fewer posts, but a
+        // real result instead of a 60s hard timeout).
+        _timing: { ...(_timing), scroll_ms: (Date.now() - _t0) - (_timing.ready_ms || 0) - (_timing.switch_ms || 0), total_ms: Date.now() - _t0 },
+        partial: !within(),
         _page: location.href,
       };
 
