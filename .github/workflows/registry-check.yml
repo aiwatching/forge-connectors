@@ -18,3 +18,5 @@ jobs:
       - run: python3 tools/build_registry.py --check
       - name: teams scroll-policy regression test
         run: python3 teams/test_scroll_policy.py
+      - name: teams search-pick selection test
+        run: python3 teams/test_search_pick.py

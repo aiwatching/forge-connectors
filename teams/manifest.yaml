@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.13"
+version: "0.10.14"
 author: forge
 category: connector
 mode: browser-side
@@ -140,11 +140,26 @@ tools:
         return m ? m[1] : null;
       };
 
+      // Chats live under collapsible folders (Chats / Favorites / Meetings —
+      // types "chats" + "custom-folder"). A collapsed folder drops its chats
+      // from the DOM, so reads miss them. Expand any collapsed chat folder
+      // (click only toggles collapsed ones; cheap to re-run each tick).
+      const expandChatFolders = () => {
+        let n = 0;
+        for (const h of document.querySelectorAll('[role="treeitem"][data-item-type="chats"], [role="treeitem"][data-item-type="custom-folder"]')) {
+          if (h.getAttribute('aria-expanded') === 'false') { try { h.click(); n++; } catch {} }
+        }
+        return n;
+      };
       const tStart = Date.now();
       while (Date.now() - tStart < 30000) {
+        expandChatFolders();
         if (document.querySelectorAll(CHAT_SEL).length > 0) break;
         await new Promise(r => setTimeout(r, 500));
       }
+      // Some folders may have been open while others were collapsed — expand the
+      // rest so the list is complete, then let them render.
+      if (expandChatFolders() > 0) await new Promise(r => setTimeout(r, 700));
 
       const limit = args.limit || 100;
       const chats = [...document.querySelectorAll(CHAT_SEL)].map(el => ({
@@ -282,6 +297,11 @@ tools:
       const name = String(args.name || '').trim();
       if (!name) return { ok: false, error: 'name parameter is required' };
       const lower = name.toLowerCase();
+      // Self-bounding: the whole tool MUST return before the 60s RPC kill.
+      // search + rail-fallback loops below all gate on within() so the sum can
+      // never blow the cap (≈50s budget leaves headroom for harvest + return).
+      const _t0 = Date.now();
+      const within = () => Date.now() - _t0 < 50000;
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
       // chats/teams/menu items). Covers normal + muted chats.
@@ -293,70 +313,92 @@ tools:
         return m ? m[1] : null;
       };
 
-      // 1. Wait for Teams left rail to be ready (cold load handling)
-      const readyStart = Date.now();
-      while (Date.now() - readyStart < 30000) {
-        if (document.querySelectorAll(CHAT_SEL).length > 0) break;
-        await new Promise(r => setTimeout(r, 500));
-      }
-      const waitedForReadyMs = Date.now() - readyStart;
-      if (document.querySelectorAll(CHAT_SEL).length === 0) {
-        return { ok: false, error: 'Teams did not finish loading in 30s — try again or refresh the tab.' };
+      // Chats live under collapsible folders (Chats / Favorites / Meetings —
+      // types "chats" + "custom-folder"). A collapsed folder hides its chats
+      // from the DOM, so the target can't be found. Expand any collapsed chat
+      // folder (toggles only collapsed ones; cheap to re-run).
+      const expandChatFolders = () => {
+        let n = 0;
+        for (const h of document.querySelectorAll('[role="treeitem"][data-item-type="chats"], [role="treeitem"][data-item-type="custom-folder"]')) {
+          if (h.getAttribute('aria-expanded') === 'false') { try { h.click(); n++; } catch {} }
+        }
+        return n;
+      };
+      // 1. PRIMARY — open the chat via the global search box. Far more reliable
+      // than scanning the (virtualized, foldered) rail: type the name, click the
+      // first PEOPLE suggestion → it navigates straight to the 1:1 chat (verified
+      // live). Rail scan stays as a fallback (group chats / search unavailable).
+      const setNative = (el, v) => { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
+      let openedViaSearch = false, searchedPerson = null, waitedMs = 0, waitedForReadyMs = 0, expandedSeeMore = false, match = null;
+      const searchBox = document.querySelector('input[data-tid="AUTOSUGGEST_INPUT"], #ms-searchux-input');
+      if (searchBox) {
+        const titleBefore = document.title;
+        try {
+          searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); setNative(searchBox, name);
+          // Pick the PEOPLE suggestion that actually MATCHES the query (name or
+          // the email local-part) — NOT just the first one. The popup shows
+          // stale/default recent contacts before the typed query resolves, so
+          // grabbing the first option opens the WRONG person.
+          const qLocal = lower.split('@')[0];
+          const matchPerson = () => [...document.querySelectorAll('[role="option"][data-tid^="AUTOSUGGEST_SUGGESTION_PEOPLE"]')]
+            .find(o => { const s = ((o.getAttribute('aria-label') || '') + ' ' + firstLine(o)).toLowerCase(); return s.includes(lower) || (qLocal.length >= 3 && s.includes(qLocal)); }) || null;
+          let person = null;
+          for (let i = 0; i < 18 && !person && within(); i++) { await new Promise(r => setTimeout(r, 400)); person = matchPerson(); }
+          if (person) {
+            searchedPerson = firstLine(person);
+            (person.querySelector('[role="button"],a,button') || person).click();
+            for (let i = 0; i < 60 && within(); i++) {
+              await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
+              if (document.title !== titleBefore && document.querySelectorAll('[data-tid="chat-pane-message"]').length > 0) { openedViaSearch = true; break; }
+            }
+          }
+        } catch (e) {}
+        try { setNative(searchBox, ''); searchBox.blur(); } catch {}
       }
 
-      // 2. Find matching chat — with one lazy "See more" expand + retry
-      const findChat = () => [...document.querySelectorAll(CHAT_SEL)]
-        .find(t => firstLine(t).toLowerCase().includes(lower)) || null;
-      let match = findChat();
-      let expandedSeeMore = false;
-      if (!match) {
-        const seeMore = [...document.querySelectorAll('[role="treeitem"]')]
-          .find(el => /^See more$/i.test(firstLine(el)));
-        if (seeMore) {
-          try { seeMore.click(); } catch {}
-          expandedSeeMore = true;
-          await new Promise(r => setTimeout(r, 900));
-          match = findChat();
+      // 2. FALLBACK — scan the left rail (expand chat folders + "See more").
+      let alreadyHere = openedViaSearch;
+      if (!openedViaSearch) {
+        const readyStart = Date.now();
+        while (Date.now() - readyStart < 20000 && within()) {
+          expandChatFolders();
+          if (document.querySelectorAll(CHAT_SEL).length > 0) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        waitedForReadyMs = Date.now() - readyStart;
+        if (document.querySelectorAll(CHAT_SEL).length === 0) {
+          return { ok: false, error: 'Teams did not finish loading in 30s — try again or refresh the tab.' };
+        }
+        const findChat = () => [...document.querySelectorAll(CHAT_SEL)]
+          .find(t => firstLine(t).toLowerCase().includes(lower)) || null;
+        match = findChat();
+        if (!match && expandChatFolders() > 0) { await new Promise(r => setTimeout(r, 700)); match = findChat(); }
+        if (!match) {
+          const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
+          if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = findChat(); }
+        }
+        if (!match) {
+          return {
+            ok: false,
+            error: `No chat matching "${name}" — not found via search or the left rail. Try the exact display name / email.`,
+            expanded_see_more: expandedSeeMore,
+            visible_chats: [...document.querySelectorAll(CHAT_SEL)].slice(0, 40).map(firstLine).filter(Boolean),
+          };
+        }
+        alreadyHere = document.title.toLowerCase().includes(lower);
+        if (!alreadyHere) {
+          const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
+          match.click();
+          let switched = false;
+          for (let i = 0; i < 60 && within(); i++) {
+            await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
+            const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean);
+            if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
+          }
+          if (!switched) return { ok: false, error: 'Timed out waiting for chat to switch (30s).', target_name: name };
         }
       }
-      if (!match) {
-        return {
-          ok: false,
-          error: `No chat matching "${name}" (even after expanding "See more"). Try the exact display name, or it may be reachable only via search.`,
-          expanded_see_more: expandedSeeMore,
-          visible_chats: [...document.querySelectorAll(CHAT_SEL)].slice(0, 40).map(firstLine).filter(Boolean),
-        };
-      }
-      const matchedThreadId = threadIdOf(match);
-
-      // 3. If already on this chat, skip the click+wait
-      const currentTitle = document.title;
-      const alreadyHere = currentTitle.toLowerCase().includes(lower);
-
-      let waitedMs = 0;
-      if (!alreadyHere) {
-        const oldMids = new Set(
-          [...document.querySelectorAll('[data-tid="chat-pane-message"]')]
-            .map(e => e.getAttribute('data-mid'))
-            .filter(Boolean)
-        );
-
-        match.click();
-
-        // Poll up to 30s for new mids to appear
-        let switched = false;
-        for (let i = 0; i < 150; i++) {
-          await new Promise(r => setTimeout(r, 200));
-          waitedMs += 200;
-          const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')]
-            .map(e => e.getAttribute('data-mid'))
-            .filter(Boolean);
-          if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
-        }
-        if (!switched) {
-          return { ok: false, error: 'Timed out waiting for chat to switch (30s).', target_name: name };
-        }
-      }
+      const matchedThreadId = match ? threadIdOf(match) : null;
 
       // 4. Extract messages. Prefer time[datetime] (clean ISO) over the
       //    human "Yesterday 5:27 PM" timestamp text. Attachments + pasted
@@ -496,64 +538,122 @@ tools:
         return m ? m[1] : null;
       };
 
-      // Wait for Teams to be ready (any channel treeitem present). Returns the
-      // instant channels appear, so a WARM tab is ~free; only a COLD tab (kanban
-      // opened a fresh Teams tab in the background) waits. Teams v2 cold-load +
-      // hydration routinely needs 20-30s, so a 15s cap was too tight and failed
-      // background cards — give cold hydration up to 30s. Channel-switch +
-      // scroll still self-bound the rest under the 60s RPC cap.
+      // The "Teams and channels" group can be COLLAPSED by the user. When it is,
+      // every team/channel treeitem leaves the DOM and reads fail with the
+      // misleading "tab not loaded" — a very common, universal failure. So
+      // first expand that group (row-click toggles it; verified via DOM probe).
+      const teamCount = () => document.querySelectorAll('[role="treeitem"][data-item-type="team"]').length;
+      const expandGroup = async () => {
+        const g = document.querySelector('[role="treeitem"][data-item-type="teams-and-channels"]');
+        if (g && g.getAttribute('aria-expanded') === 'false') { try { g.click(); } catch {} return true; }
+        return false;
+      };
+      // Ready gate: wait for the TEAM list to render (channels only appear once a
+      // team is expanded, so gate on teams, not channels). Expand the group if
+      // collapsed; give cold Teams v2 hydration up to 30s. switch+scroll still
+      // self-bound the rest under the 60s RPC cap.
       const readyStart = Date.now();
+      let groupExpanded = false;
       while (Date.now() - readyStart < 30000) {
-        if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length > 0) break;
+        if (teamCount() > 0) break;
+        if (!groupExpanded) groupExpanded = await expandGroup();
         await new Promise(r => setTimeout(r, 500));
       }
-      if (document.querySelectorAll('[role="treeitem"][data-item-type="channel"]').length === 0) {
-        return { ok: false, error: 'Teams did not finish loading (no channels in left rail in 30s). Open a Teams tab and let it load, then retry.' };
+      if (teamCount() === 0) {
+        return { ok: false, error: 'Teams did not finish loading (no teams in left rail in 30s — the "Teams and channels" group may be collapsed, or the tab is still loading). Open the Teams tab, expand "Teams and channels", let it load, then retry.' };
       }
       _timing.ready_ms = Date.now() - _t0;
 
-      // Locate the channel by walking the flat tree in document order:
-      // a channel belongs to the nearest preceding data-item-type="team".
-      // This is precise — aria-level mixes chats/teams/menu items.
+      // EXACT-FIRST matching. "FortiNAC - Dev" is a substring of "FortiNAC -
+      // Development Questions" and "RADIUS" of "RADIUS Questions", so naive
+      // includes() opens the WRONG team/channel. Prefer an EXACT team-name match
+      // (fall back to includes only when no team matches exactly), and among
+      // a team's channels prefer the EXACT channel name over a substring.
+      const norm = (s) => (s || '').trim().toLowerCase();
+      const teamNames = [...document.querySelectorAll('[role="treeitem"][data-item-type="team"]')].map(t => norm(firstLine(t)));
+      const hasExactTeam = teamNames.includes(tLower);
+      const teamMatches = (n) => hasExactTeam ? (n === tLower) : n.includes(tLower);
       const locate = () => {
         const items = [...document.querySelectorAll('[role="treeitem"]')];
-        let curTeam = null;
+        let curTeam = null, curOk = false, best = null, collapsedTeam = null;
         for (const el of items) {
           const ty = el.getAttribute('data-item-type');
-          if (ty === 'team') curTeam = firstLine(el);
-          else if (ty === 'channel' && curTeam &&
-                   curTeam.toLowerCase().includes(tLower) &&
-                   firstLine(el).toLowerCase().includes(cLower)) {
-            return { channelEl: el, teamLabel: curTeam };
+          if (ty === 'team') {
+            curTeam = firstLine(el); curOk = teamMatches(norm(curTeam));
+            if (curOk && el.getAttribute('aria-expanded') === 'false') collapsedTeam = el;
+          } else if (ty === 'channel' && curOk) {
+            const cn = norm(firstLine(el));
+            const score = cn === cLower ? 2 : cn.includes(cLower) ? 1 : 0;   // exact channel beats substring
+            if (score && (!best || score > best.score)) best = { channelEl: el, teamLabel: curTeam, score };
           }
         }
-        return null;
+        return best || { collapsedTeam };
       };
       let hit = locate();
-      // Lazy: target team/channel may be behind "See all your teams" or a
-      // collapsed team. Click the expander once and retry.
-      let expanded = false;
-      if (!hit) {
-        const expander = [...document.querySelectorAll('[role="treeitem"]')]
+      let expanded = groupExpanded;
+      // Target team collapsed → expand it (channels render on demand), retry.
+      for (let i = 0; !hit.channelEl && hit.collapsedTeam && i < 3; i++) {
+        try { hit.collapsedTeam.click(); } catch {}
+        expanded = true;
+        await new Promise(r => setTimeout(r, 900));
+        hit = locate();
+      }
+      // Still not found → team may be behind "See all your teams"; expand + retry.
+      if (!hit.channelEl) {
+        const seeAll = [...document.querySelectorAll('[role="treeitem"]')]
           .find(el => /^See all your teams$/i.test(firstLine(el)));
-        if (expander) {
-          try { expander.click(); } catch {}
+        if (seeAll) {
+          try { seeAll.click(); } catch {}
           expanded = true;
           await new Promise(r => setTimeout(r, 1000));
           hit = locate();
+          for (let i = 0; !hit.channelEl && hit.collapsedTeam && i < 3; i++) {
+            try { hit.collapsedTeam.click(); } catch {}
+            await new Promise(r => setTimeout(r, 900));
+            hit = locate();
+          }
         }
       }
-      if (!hit) {
+      // Still not found → the channel is likely HIDDEN from the rail (a team
+      // with many channels shows only a few + a "See all channels" link that
+      // opens a right-side panel). Open that panel for the matching team and
+      // click the channel row's "Go to channel" button — it navigates straight
+      // to the channel WITHOUT changing the user's pinned rail (verified).
+      if (!hit.channelEl) {
+        let curT = null, sacEl = null;
+        for (const el of document.querySelectorAll('[role="treeitem"]')) {
+          const ty = el.getAttribute('data-item-type');
+          if (ty === 'team') curT = firstLine(el);
+          if (/^See all channels$/i.test(firstLine(el)) && curT && teamMatches(norm(curT))) { sacEl = el; break; }
+        }
+        if (sacEl) {
+          try { sacEl.click(); } catch {}
+          let panel = null;
+          for (let i = 0; i < 20 && !panel; i++) { await new Promise(r => setTimeout(r, 300)); panel = document.querySelector('[data-tid="user-onboarding-team-channel-list-viewport"], [data-tid="user-onboarding-team-channel-list-runway"]'); }
+          if (panel) {
+            const prows = [...panel.querySelectorAll('[role="row"]')];
+            const row = prows.find(r => norm(firstLine(r)) === cLower) || prows.find(r => norm(firstLine(r)).includes(cLower));   // exact channel first
+            const goBtn = row && [...row.querySelectorAll('button')].find(b => /go to channel/i.test(b.getAttribute('aria-label') || ''));
+            if (goBtn) {
+              try { goBtn.click(); } catch {}
+              expanded = true;
+              for (let i = 0; i < 20 && !document.title.toLowerCase().includes(cLower); i++) await new Promise(r => setTimeout(r, 300));
+              hit = { channelEl: goBtn, teamLabel: curT, viaPanel: true };
+            }
+          }
+        }
+      }
+      if (!hit.channelEl) {
         const teams = [...document.querySelectorAll('[role="treeitem"][data-item-type="team"]')].map(firstLine);
         return {
           ok: false,
-          error: `Channel "${channelName}" under team "${teamName}" not found. The team may be collapsed (expand it in Teams) or not joined.`,
-          expanded_see_all: expanded,
+          error: `Channel "${channelName}" under team "${teamName}" not found in the rail or via "See all channels". The team may not be joined, or the name didn't match.`,
+          expanded_any: expanded,
           visible_teams: teams,
         };
       }
       const channel = hit.channelEl;
-      const channelThreadId = threadIdOf(channel);
+      const channelThreadId = hit.viaPanel ? null : threadIdOf(channel);
 
       // Hydration gate. The title can already say we're on the channel
       // while the message pane never rendered (a long-lived tab stuck
@@ -788,12 +888,25 @@ tools:
       on_target: "teams.microsoft.com"
       settle_after_load_ms: 5000
     script: |
+      // Expand the "Teams and channels" group if the user collapsed it —
+      // otherwise NO team/channel nodes are in the DOM at all (row-click toggles).
       const tStart = Date.now();
+      let _grpTried = false;
       while (Date.now() - tStart < 30000) {
         if (document.querySelectorAll('[role="treeitem"][data-item-type="team"]').length > 0) break;
+        if (!_grpTried) {
+          const g = document.querySelector('[role="treeitem"][data-item-type="teams-and-channels"]');
+          if (g && g.getAttribute('aria-expanded') === 'false') { try { g.click(); } catch {} }
+          _grpTried = true;
+        }
         await new Promise(r => setTimeout(r, 500));
       }
       const firstLine = (el) => (el.innerText || '').split('\n').filter(Boolean)[0] || '';
+      // A long team list is truncated behind "See all your teams" — click it
+      // once so every team (and its channels) renders before we enumerate.
+      const _seeAllTeams = [...document.querySelectorAll('[role="treeitem"]')]
+        .find(el => /^See all your teams$/i.test(firstLine(el)));
+      if (_seeAllTeams) { try { _seeAllTeams.click(); } catch {} await new Promise(r => setTimeout(r, 1000)); }
       const threadIdOf = (el) => {
         const v = el.getAttribute('data-fui-tree-item-value') || '';
         const m = (v.split('/').pop() || '').match(/\|(.+)$/);
