@@ -16,3 +16,5 @@ jobs:
         with:
           python-version: '3.x'
       - run: python3 tools/build_registry.py --check
+      - name: teams scroll-policy regression test
+        run: python3 teams/test_scroll_policy.py

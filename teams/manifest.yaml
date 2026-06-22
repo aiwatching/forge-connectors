@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.11"
+version: "0.10.12"
 author: forge
 category: connector
 mode: browser-side
@@ -729,16 +729,21 @@ tools:
         // Cap scroll rounds so total tool time stays under the 60s RPC budget
         // (hydrate + channel-switch already eat a chunk). Newest posts come
         // first anyway, so a few rounds cover MAX_MESSAGES in practice.
-        let lastSH = 0, dry = 0;
-        while (dry < 3 && scrollRounds < 12 && harvested.size < maxMessages && within()) {
+        // Dry signal = harvested GROWTH, not scrollHeight/scrollTop: a short
+        // channel (e.g. 4 posts) never shrinks its height nor reaches the top,
+        // so the old scroll-based dry counter never tripped and ground all 12
+        // rounds (~8s each on heavy posts) into the 60s timeout. Keying on "did
+        // this round add a new post?" stops after 2 empty rounds.
+        let prevHarvest = harvested.size, dry = 0;
+        while (dry < 2 && scrollRounds < 12 && harvested.size < maxMessages && within()) {
           scrollRounds++;
           vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.8);
           vp.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
           await new Promise(r => setTimeout(r, 900));
+          if (!within()) break;                 // never start a heavy grab past budget
           grab();
-          const sh = vp.scrollHeight;
-          if (sh > lastSH + 10 || vp.scrollTop > 5) dry = 0; else dry++;
-          lastSH = sh;
+          if (harvested.size > prevHarvest) dry = 0; else dry++;
+          prevHarvest = harvested.size;
         }
       }
       // mid is the post's epoch-ms id → sort ascending = oldest-first (chronological).
