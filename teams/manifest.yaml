@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.14"
+version: "0.10.15"
 author: forge
 category: connector
 mode: browser-side
@@ -330,17 +330,26 @@ tools:
       // live). Rail scan stays as a fallback (group chats / search unavailable).
       const setNative = (el, v) => { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
       let openedViaSearch = false, searchedPerson = null, waitedMs = 0, waitedForReadyMs = 0, expandedSeeMore = false, match = null;
-      const searchBox = document.querySelector('input[data-tid="AUTOSUGGEST_INPUT"], #ms-searchux-input');
+      // The search box can be transiently absent during a re-render. Checking
+      // once and falling straight to the rail makes email queries hard-fail
+      // (the rail only carries display names). Wait briefly for it to appear.
+      const findSearchBox = () => document.querySelector('input[data-tid="AUTOSUGGEST_INPUT"], #ms-searchux-input');
+      let searchBox = findSearchBox();
+      for (let i = 0; i < 10 && !searchBox && within(); i++) { await new Promise(r => setTimeout(r, 300)); searchBox = findSearchBox(); }
       if (searchBox) {
         const titleBefore = document.title;
         try {
           searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); setNative(searchBox, name);
-          // Pick the PEOPLE suggestion that actually MATCHES the query (name or
-          // the email local-part) — NOT just the first one. The popup shows
-          // stale/default recent contacts before the typed query resolves, so
-          // grabbing the first option opens the WRONG person.
+          // A precise email/full-name query surfaces the person as a TOPHITS
+          // option, NOT under PEOPLE (PEOPLE only fills in for partial queries,
+          // often with the WRONG people). Accept either, but only entries whose
+          // aria-label starts with "Person" so group chats / files / search
+          // suggestions are never mistaken for one. The email local-part also
+          // matches the alias in parens, e.g. "(SUND)".
           const qLocal = lower.split('@')[0];
-          const matchPerson = () => [...document.querySelectorAll('[role="option"][data-tid^="AUTOSUGGEST_SUGGESTION_PEOPLE"]')]
+          const PERSON_SEL = '[role="option"][data-tid*="AUTOSUGGEST_SUGGESTION_PEOPLE"], [role="option"][data-tid*="AUTOSUGGEST_SUGGESTION_TOPHITS"]';
+          const matchPerson = () => [...document.querySelectorAll(PERSON_SEL)]
+            .filter(o => /^person\b/i.test((o.getAttribute('aria-label') || '').trim()))
             .find(o => { const s = ((o.getAttribute('aria-label') || '') + ' ' + firstLine(o)).toLowerCase(); return s.includes(lower) || (qLocal.length >= 3 && s.includes(qLocal)); }) || null;
           let person = null;
           for (let i = 0; i < 18 && !person && within(); i++) { await new Promise(r => setTimeout(r, 400)); person = matchPerson(); }
@@ -471,7 +480,7 @@ tools:
       return {
         ok: true,
         chat_title: chatTitle,
-        matched_name: firstLine(match),
+        matched_name: match ? firstLine(match) : (searchedPerson || chatTitle),
         thread_id: matchedThreadId,
         expanded_see_more: expandedSeeMore,
         switched: !alreadyHere,
