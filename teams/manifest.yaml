@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.20"
+version: "0.10.21"
 author: forge
 category: connector
 mode: browser-side
@@ -344,10 +344,25 @@ tools:
       const squash = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
       const qLocal = lower.split('@')[0];
       const qSquash = squash(qLocal);
-      const itemMatches = (t) => {
-        if (firstLine(t).toLowerCase().includes(lower)) return true;
-        if (qSquash.length >= 4 && squash(firstLine(t)) === qSquash) return true;
-        return ((t.innerText || '') + ' ' + (t.getAttribute('aria-label') || '')).toLowerCase().includes(lower);
+      // EXACT-FIRST scoring. Naive substring matched the group chat
+      // "Alvin, Dancheng Sun, David, +6" instead of the 1:1 "Dancheng Sun" —
+      // both contain the substring. Score: 3 exact display name, 2 email
+      // local-part equals display-name-squashed, 1 substring, 0.5 aria-label.
+      const scoreItem = (t) => {
+        const fl = firstLine(t).toLowerCase();
+        if (fl === lower) return 3;
+        if (qSquash.length >= 4 && squash(fl) === qSquash) return 2;
+        if (fl.includes(lower)) return 1;
+        if (((t.innerText || '') + ' ' + (t.getAttribute('aria-label') || '')).toLowerCase().includes(lower)) return 0.5;
+        return 0;
+      };
+      const pickBest = () => {
+        let best = null;
+        for (const t of document.querySelectorAll(CHAT_SEL)) {
+          const s = scoreItem(t);
+          if (s > 0 && (!best || s > best.score)) best = { el: t, score: s };
+        }
+        return best ? best.el : null;
       };
       const readyStart = Date.now();
       while (Date.now() - readyStart < 12000 && within()) {
@@ -362,14 +377,13 @@ tools:
         _dbg('EXIT rail empty');
         return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
       }
-      const findChat = () => [...document.querySelectorAll(CHAT_SEL)].find(itemMatches) || null;
-      match = findChat();
-      if (!match && expandChatFolders() > 0) { await new Promise(r => setTimeout(r, 700)); match = findChat(); }
+      match = pickBest();
+      if (!match && expandChatFolders() > 0) { await new Promise(r => setTimeout(r, 700)); match = pickBest(); }
       if (!match) {
         const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
-        if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = findChat(); }
+        if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = pickBest(); }
       }
-      _dbg('match=' + (match ? firstLine(match) : 'NONE') + ' seeMore=' + expandedSeeMore);
+      _dbg('match=' + (match ? firstLine(match) : 'NONE') + ' score=' + (match ? scoreItem(match) : 0) + ' seeMore=' + expandedSeeMore);
       if (!match) {
         _dbg('EXIT no match');
         return {
@@ -386,14 +400,19 @@ tools:
         const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
         _dbg('clicking match, oldMids=' + oldMids.size);
         try { match.click(); _dbg('clicked OK'); } catch (e) { _dbg('CLICK THREW: ' + (e && e.message)); }
+        // Background tabs get setTimeout throttled to ~1s+ (observed ~8s/tick
+        // for the connector's Teams tab when user is on a different window).
+        // 200ms ticks made waitedMs useless — count wall-clock against budget.
         let switched = false;
-        for (let i = 0; i < 60 && within(); i++) {
-          await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
+        const switchStart = Date.now();
+        while (Date.now() - switchStart < 30000 && within()) {
+          await new Promise(r => setTimeout(r, 500));
           const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean);
           if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
         }
+        waitedMs = Date.now() - switchStart;
         _dbg('switch loop done switched=' + switched + ' waitedMs=' + waitedMs);
-        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch.', target_name: name }; }
+        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch — Teams tab may be backgrounded (Chrome throttles bg-tab timers); bring it to the foreground and retry.', target_name: name, matched_rail: firstLine(match) }; }
       }
       const matchedThreadId = match ? threadIdOf(match) : null;
       _dbg('starting harvest');
