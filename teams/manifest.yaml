@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.19"
+version: "0.10.20"
 author: forge
 category: connector
 mode: browser-side
@@ -301,6 +301,13 @@ tools:
       // before the 60s RPC kill.
       const _t0 = Date.now();
       const within = () => Date.now() - _t0 < 45000;
+      // Phase markers → DOM (shared across worlds). isolated-world console.log
+      // never reaches CDP/DevTools; data-attribute on <html> does. Read via
+      // `document.documentElement.dataset.forgeDbgLog` in DevTools after a
+      // connector run to see exactly where read_chat got to.
+      const _dbg = (s) => { try { const el = document.documentElement; el.dataset.forgeDbg = (Date.now() - _t0) + 'ms ' + s; el.dataset.forgeDbgLog = ((el.dataset.forgeDbgLog || '') + ' | ' + (Date.now() - _t0) + ':' + s).slice(-1200); } catch {} };
+      try { document.documentElement.dataset.forgeDbgLog = ''; } catch {}
+      _dbg('START name=' + name);
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
       // chats/teams/menu items). Covers normal + muted chats.
@@ -349,7 +356,10 @@ tools:
         await new Promise(r => setTimeout(r, 500));
       }
       waitedForReadyMs = Date.now() - readyStart;
-      if (document.querySelectorAll(CHAT_SEL).length === 0) {
+      const railCount = document.querySelectorAll(CHAT_SEL).length;
+      _dbg('rail ready count=' + railCount + ' waited=' + waitedForReadyMs);
+      if (railCount === 0) {
+        _dbg('EXIT rail empty');
         return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
       }
       const findChat = () => [...document.querySelectorAll(CHAT_SEL)].find(itemMatches) || null;
@@ -359,7 +369,9 @@ tools:
         const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
         if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = findChat(); }
       }
+      _dbg('match=' + (match ? firstLine(match) : 'NONE') + ' seeMore=' + expandedSeeMore);
       if (!match) {
+        _dbg('EXIT no match');
         return {
           ok: false,
           error: `No chat matching "${name}" in the left rail. The rail lists recent chats by DISPLAY NAME (not email) — pass the person's display name (e.g. "Dancheng Sun"), or open the chat in Teams once so it appears in the rail.`,
@@ -369,18 +381,22 @@ tools:
       }
       const matchedName = firstLine(match);
       let alreadyHere = document.title.toLowerCase().includes(matchedName.toLowerCase());
+      _dbg('alreadyHere=' + alreadyHere + ' title=' + document.title.slice(0,60));
       if (!alreadyHere) {
         const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
-        match.click();
+        _dbg('clicking match, oldMids=' + oldMids.size);
+        try { match.click(); _dbg('clicked OK'); } catch (e) { _dbg('CLICK THREW: ' + (e && e.message)); }
         let switched = false;
         for (let i = 0; i < 60 && within(); i++) {
           await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
           const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean);
           if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
         }
-        if (!switched) return { ok: false, error: 'Timed out waiting for chat to switch.', target_name: name };
+        _dbg('switch loop done switched=' + switched + ' waitedMs=' + waitedMs);
+        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch.', target_name: name }; }
       }
       const matchedThreadId = match ? threadIdOf(match) : null;
+      _dbg('starting harvest');
 
       // 4. Extract messages. Prefer time[datetime] (clean ISO) over the
       //    human "Yesterday 5:27 PM" timestamp text. Attachments + pasted
@@ -426,6 +442,7 @@ tools:
       }).filter(im => im.url);
 
       const items = [...document.querySelectorAll('[data-tid="chat-pane-item"]')];
+      _dbg('harvest items=' + items.length);
       const messages = items.map(item => {
         const msg = item.querySelector('[data-tid="chat-pane-message"]');
         const mid = msg?.getAttribute('data-mid') || '';
@@ -450,6 +467,7 @@ tools:
       const chatTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
 
       const limit = args.limit || 50;
+      _dbg('harvest done messages=' + messages.length + ' RETURN');
       return {
         ok: true,
         chat_title: chatTitle,
