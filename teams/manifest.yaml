@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.16"
+version: "0.10.17"
 author: forge
 category: connector
 mode: browser-side
@@ -302,6 +302,8 @@ tools:
       // never blow the cap (≈50s budget leaves headroom for harvest + return).
       const _t0 = Date.now();
       const within = () => Date.now() - _t0 < 45000;
+      const _dbg = (s) => { try { console.log('[forge-teams read_chat ' + (Date.now() - _t0) + 'ms] ' + s); } catch {} };
+      _dbg('START name=' + name);
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
       // chats/teams/menu items). Covers normal + muted chats.
@@ -349,10 +351,12 @@ tools:
       const findSearchBox = () => document.querySelector('input[data-tid="AUTOSUGGEST_INPUT"], #ms-searchux-input');
       let searchBox = findSearchBox();
       for (let i = 0; i < 10 && !searchBox && within(); i++) { await new Promise(r => setTimeout(r, 300)); searchBox = findSearchBox(); }
+      _dbg('searchBox=' + !!searchBox);
       if (searchBox) {
         const titleBefore = document.title;
         try {
           searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); typeSearch(searchBox, name);
+          _dbg('typed query');
           // A precise email/full-name query surfaces the person as a TOPHITS
           // option, NOT under PEOPLE (PEOPLE only fills in for partial queries,
           // often with the WRONG people). Accept either, but only entries whose
@@ -366,21 +370,26 @@ tools:
             .find(o => { const s = ((o.getAttribute('aria-label') || '') + ' ' + firstLine(o)).toLowerCase(); return s.includes(lower) || (qLocal.length >= 3 && s.includes(qLocal)); }) || null;
           let person = null;
           for (let i = 0; i < 18 && !person && within(); i++) { await new Promise(r => setTimeout(r, 400)); person = matchPerson(); }
+          _dbg('person=' + (person ? firstLine(person) : 'NONE') + ' opts=' + document.querySelectorAll('[role="option"]').length);
           if (person) {
             searchedPerson = firstLine(person);
             (person.querySelector('[role="button"],a,button') || person).click();
+            _dbg('clicked person, waiting for switch');
             for (let i = 0; i < 60 && within(); i++) {
               await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
               if (document.title !== titleBefore && document.querySelectorAll('[data-tid="chat-pane-message"]').length > 0) { openedViaSearch = true; break; }
             }
+            _dbg('switch loop done openedViaSearch=' + openedViaSearch + ' waitedMs=' + waitedMs);
           }
-        } catch (e) {}
+        } catch (e) { _dbg('SEARCH THREW: ' + (e && e.message)); }
         try { setNative(searchBox, ''); searchBox.blur(); } catch {}
       }
+      _dbg('search phase end openedViaSearch=' + openedViaSearch);
 
       // 2. FALLBACK — scan the left rail (expand chat folders + "See more").
       let alreadyHere = openedViaSearch;
       if (!openedViaSearch) {
+        _dbg('entering RAIL fallback');
         const readyStart = Date.now();
         while (Date.now() - readyStart < 12000 && within()) {
           expandChatFolders();
