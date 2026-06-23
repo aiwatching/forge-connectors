@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.25"
+version: "0.10.26"
 author: forge
 category: connector
 mode: browser-side
@@ -351,24 +351,66 @@ tools:
         }
         return n;
       };
-      // Open the chat via the LEFT RAIL only. The global search box is
-      // UNUSABLE from the extension's isolated world: Teams gates its
-      // people-search backend on TRUSTED keyboard events, but a content
-      // script can only emit isTrusted=false synthetic events, so the
-      // suggestion list never populates (opts=0). The rail is plain DOM —
-      // no trusted-event requirement — so we match + click it directly.
-      let waitedMs = 0, waitedForReadyMs = 0, expandedSeeMore = false, match = null;
-      // Rail items show DISPLAY NAMES (no email). Match the visible name, OR —
-      // when an email/handle is given — its separator-stripped local part
-      // (binxu@→"binxu" vs "Bin Xu"→"binxu"), OR the raw query appearing
-      // anywhere in the item's text/aria-label.
+
+      // 1. SEARCH-BOX path (PRIMARY when available). Type the query, wait
+      //    for a "Person ..." suggestion (PEOPLE or TOPHITS), click it →
+      //    Teams navigates straight to the 1:1. Covers ANY Teams user
+      //    (including users not in the rail, like sund@→Dancheng Sun).
+      //    Caveat: the search backend only fires on KEYBOARD events; an
+      //    isolated-world content script can only emit isTrusted=false
+      //    synthetic events. In a backgrounded tab this combined with
+      //    Chrome's JS throttling means the backend never queries → no
+      //    suggestions. Visible-tab behaviour we let the live test reveal.
+      //    Capped at 5s wait so a quiet backend doesn't dominate; rail
+      //    fallback runs if search yields nothing.
+      const setNative = (el, v) => { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
+      const typeSearch = (el, v) => {
+        el.focus();
+        const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v);
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: v, inputType: 'insertText' }));
+        const k = v.slice(-1) || 'a';
+        for (const t of ['keydown', 'keyup']) el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, key: k }));
+      };
+      let openedViaSearch = false, searchedPerson = null, waitedMs = 0, waitedForReadyMs = 0, expandedSeeMore = false, match = null;
+      const searchBox = document.querySelector('input[data-tid="AUTOSUGGEST_INPUT"], #ms-searchux-input');
+      if (searchBox) {
+        const titleBefore = document.title;
+        try {
+          searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); typeSearch(searchBox, name);
+          // Pick a "Person <name>" suggestion (either PEOPLE or TOPHITS
+          // bucket) whose aria-label/text contains the query or its
+          // email local-part (matches the "(alias)" form too).
+          const qLocal = lower.split('@')[0];
+          const PERSON_SEL = '[role="option"][data-tid*="AUTOSUGGEST_SUGGESTION_PEOPLE"], [role="option"][data-tid*="AUTOSUGGEST_SUGGESTION_TOPHITS"]';
+          const matchPerson = () => [...document.querySelectorAll(PERSON_SEL)]
+            .filter(o => /^person\b/i.test((o.getAttribute('aria-label') || '').trim()))
+            .find(o => { const s = ((o.getAttribute('aria-label') || '') + ' ' + firstLine(o)).toLowerCase(); return s.includes(lower) || (qLocal.length >= 3 && s.includes(qLocal)); }) || null;
+          let person = null;
+          for (let i = 0; i < 12 && !person && within(); i++) { await new Promise(r => setTimeout(r, 400)); person = matchPerson(); }
+          if (person) {
+            searchedPerson = firstLine(person);
+            (person.querySelector('[role="button"],a,button') || person).click();
+            // Wait for chat pane to populate. MutationObserver-style — but
+            // for simplicity reuse the same poll; tab is visible here so
+            // setTimeout isn't throttled.
+            for (let i = 0; i < 40 && within(); i++) {
+              await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
+              if (document.title !== titleBefore && document.querySelectorAll('[data-tid="chat-pane-message"]').length > 0) { openedViaSearch = true; break; }
+            }
+          }
+        } catch {}
+        try { setNative(searchBox, ''); searchBox.blur(); } catch {}
+      }
+      // 2. RAIL fallback. Runs ONLY if search-box path didn't open the chat
+      //    (no search box / search backend didn't query / no Person match).
+      //    Rail items show DISPLAY NAMES only (no email), match the visible
+      //    name OR an email local-part whose separator-stripped form equals
+      //    the squashed display name (binxu@→"binxu"). EXACT-first scoring
+      //    prefers 1:1 "Dancheng Sun" over group chat "Alvin, Dancheng Sun,
+      //    David, +6" which both contain the substring.
       const squash = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const qLocal = lower.split('@')[0];
-      const qSquash = squash(qLocal);
-      // EXACT-FIRST scoring. Naive substring matched the group chat
-      // "Alvin, Dancheng Sun, David, +6" instead of the 1:1 "Dancheng Sun" —
-      // both contain the substring. Score: 3 exact display name, 2 email
-      // local-part equals display-name-squashed, 1 substring, 0.5 aria-label.
+      const qLocal2 = lower.split('@')[0];
+      const qSquash = squash(qLocal2);
       const scoreItem = (t) => {
         const fl = firstLine(t).toLowerCase();
         if (fl === lower) return 3;
@@ -385,33 +427,36 @@ tools:
         }
         return best ? best.el : null;
       };
-      const readyStart = Date.now();
-      while (Date.now() - readyStart < 12000 && within()) {
-        expandChatFolders();
-        if (document.querySelectorAll(CHAT_SEL).length > 0) break;
-        await new Promise(r => setTimeout(r, 500));
+      if (!openedViaSearch) {
+        const readyStart = Date.now();
+        while (Date.now() - readyStart < 12000 && within()) {
+          expandChatFolders();
+          if (document.querySelectorAll(CHAT_SEL).length > 0) break;
+          await new Promise(r => setTimeout(r, 500));
+        }
+        waitedForReadyMs = Date.now() - readyStart;
+        const railCount = document.querySelectorAll(CHAT_SEL).length;
+        if (railCount === 0) {
+          return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
+        }
+        match = pickBest();
+        if (!match && expandChatFolders() > 0) { await new Promise(r => setTimeout(r, 700)); match = pickBest(); }
+        if (!match) {
+          const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
+          if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = pickBest(); }
+        }
+        if (!match) {
+          return {
+            ok: false,
+            error: `No chat matching "${name}" — search box didn't surface them and the rail (recent chats) doesn't contain them. Pass the exact display name, or open the chat manually in Teams once so it appears in the rail.`,
+            search_tried: !!searchBox,
+            expanded_see_more: expandedSeeMore,
+            visible_chats: [...document.querySelectorAll(CHAT_SEL)].slice(0, 40).map(firstLine).filter(Boolean),
+          };
+        }
       }
-      waitedForReadyMs = Date.now() - readyStart;
-      const railCount = document.querySelectorAll(CHAT_SEL).length;
-      if (railCount === 0) {
-        return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
-      }
-      match = pickBest();
-      if (!match && expandChatFolders() > 0) { await new Promise(r => setTimeout(r, 700)); match = pickBest(); }
-      if (!match) {
-        const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
-        if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = pickBest(); }
-      }
-      if (!match) {
-        return {
-          ok: false,
-          error: `No chat matching "${name}" in the left rail. The rail lists recent chats by DISPLAY NAME (not email) — pass the person's display name (e.g. "Dancheng Sun"), or open the chat in Teams once so it appears in the rail.`,
-          expanded_see_more: expandedSeeMore,
-          visible_chats: [...document.querySelectorAll(CHAT_SEL)].slice(0, 40).map(firstLine).filter(Boolean),
-        };
-      }
-      const matchedName = firstLine(match);
-      let alreadyHere = document.title.toLowerCase().includes(matchedName.toLowerCase());
+      const matchedName = openedViaSearch ? (searchedPerson || name) : firstLine(match);
+      let alreadyHere = openedViaSearch || document.title.toLowerCase().includes(matchedName.toLowerCase());
       if (!alreadyHere) {
         const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
         try { match.click(); } catch (e) { }
