@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.26"
+version: "0.10.27"
 author: forge
 category: connector
 mode: browser-side
@@ -104,6 +104,17 @@ settings:
     description: "Usually https://teams.microsoft.com"
     default: "https://teams.microsoft.com"
     required: true
+  # M365 tenant email — used by the unified IdP login to fill the Microsoft
+  # email entry page that gates Teams (login.microsoftonline.com). This is
+  # NOT the same as the user's SSO username (zliu / zliu@fortinet.com);
+  # Teams uniquely needs the per-tenant address (e.g. zliu@fortinet-us.com)
+  # so Microsoft routes to the right SAML IdP. Other SAML SPs (mantis /
+  # pmdb / owa) reuse the SSO username via the IdP's own form.
+  tenant_email:
+    type: string
+    label: M365 tenant email (e.g. zliu@fortinet-us.com)
+    description: "Used by unified IdP login to fill login.microsoftonline.com's email page (input#i0116). Differs from SSO username — Teams needs the @<m365-tenant>.com address (e.g. @fortinet-us.com / @fortinet-emea.com) so Microsoft routes you to the right SAML IdP."
+    required: false
   # For unattended automation (chat reads/sends while Teams tab is in the
   # background) enable the Forge extension's "Activate connector tab while
   # running (steals focus)" toggle in the extension's Settings tab. The
