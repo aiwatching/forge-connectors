@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.15"
+version: "0.10.16"
 author: forge
 category: connector
 mode: browser-side
@@ -301,7 +301,7 @@ tools:
       // search + rail-fallback loops below all gate on within() so the sum can
       // never blow the cap (≈50s budget leaves headroom for harvest + return).
       const _t0 = Date.now();
-      const within = () => Date.now() - _t0 < 50000;
+      const within = () => Date.now() - _t0 < 45000;
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
       // chats/teams/menu items). Covers normal + muted chats.
@@ -329,6 +329,19 @@ tools:
       // first PEOPLE suggestion → it navigates straight to the 1:1 chat (verified
       // live). Rail scan stays as a fallback (group chats / search unavailable).
       const setNative = (el, v) => { const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
+      // Teams' search backend only queries on KEYBOARD activity — a bare
+      // input event (enough in the CDP main world) does NOT trigger the
+      // people search from the extension's isolated world, so the person
+      // suggestion never renders and the tool hangs. Set the value, fire a
+      // real InputEvent, then bracket with keydown/keyup so the debounced
+      // query actually fires.
+      const typeSearch = (el, v) => {
+        el.focus();
+        const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set; d.call(el, v);
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: v, inputType: 'insertText' }));
+        const k = v.slice(-1) || 'a';
+        for (const t of ['keydown', 'keyup']) el.dispatchEvent(new KeyboardEvent(t, { bubbles: true, key: k }));
+      };
       let openedViaSearch = false, searchedPerson = null, waitedMs = 0, waitedForReadyMs = 0, expandedSeeMore = false, match = null;
       // The search box can be transiently absent during a re-render. Checking
       // once and falling straight to the rail makes email queries hard-fail
@@ -339,7 +352,7 @@ tools:
       if (searchBox) {
         const titleBefore = document.title;
         try {
-          searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); setNative(searchBox, name);
+          searchBox.focus(); setNative(searchBox, ''); await new Promise(r => setTimeout(r, 150)); typeSearch(searchBox, name);
           // A precise email/full-name query surfaces the person as a TOPHITS
           // option, NOT under PEOPLE (PEOPLE only fills in for partial queries,
           // often with the WRONG people). Accept either, but only entries whose
@@ -369,14 +382,14 @@ tools:
       let alreadyHere = openedViaSearch;
       if (!openedViaSearch) {
         const readyStart = Date.now();
-        while (Date.now() - readyStart < 20000 && within()) {
+        while (Date.now() - readyStart < 12000 && within()) {
           expandChatFolders();
           if (document.querySelectorAll(CHAT_SEL).length > 0) break;
           await new Promise(r => setTimeout(r, 500));
         }
         waitedForReadyMs = Date.now() - readyStart;
         if (document.querySelectorAll(CHAT_SEL).length === 0) {
-          return { ok: false, error: 'Teams did not finish loading in 30s — try again or refresh the tab.' };
+          return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
         }
         const findChat = () => [...document.querySelectorAll(CHAT_SEL)]
           .find(t => firstLine(t).toLowerCase().includes(lower)) || null;
