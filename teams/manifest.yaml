@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.21"
+version: "0.10.22"
 author: forge
 category: connector
 mode: browser-side
@@ -400,19 +400,30 @@ tools:
         const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
         _dbg('clicking match, oldMids=' + oldMids.size);
         try { match.click(); _dbg('clicked OK'); } catch (e) { _dbg('CLICK THREW: ' + (e && e.message)); }
-        // Background tabs get setTimeout throttled to ~1s+ (observed ~8s/tick
-        // for the connector's Teams tab when user is on a different window).
-        // 200ms ticks made waitedMs useless — count wall-clock against budget.
-        let switched = false;
+        // Background-tab Chrome throttles setTimeout to 80+s/tick — any
+        // setTimeout polling loop blows the 60s RPC cap (proven live).
+        // MutationObserver fires on real DOM events, NOT timers, so it's
+        // unaffected by throttling. Wait for a chat-pane-message not in
+        // oldMids to appear.
         const switchStart = Date.now();
-        while (Date.now() - switchStart < 30000 && within()) {
-          await new Promise(r => setTimeout(r, 500));
+        const checkMids = () => {
           const cur = [...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean);
-          if (cur.length > 0 && cur.some(m => !oldMids.has(m))) { switched = true; break; }
-        }
+          return cur.length > 0 && cur.some(m => !oldMids.has(m));
+        };
+        const switched = await new Promise(resolve => {
+          if (checkMids()) { resolve(true); return; }
+          let done = false;
+          const finish = (v) => { if (done) return; done = true; try { obs.disconnect(); } catch {} resolve(v); };
+          const obs = new MutationObserver(() => { if (checkMids()) finish(true); });
+          obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-mid'] });
+          // Fallback timeout — itself bg-throttled; if click was ignored or
+          // the chat is empty, observer never fires and we'll be late.
+          const remaining = Math.max(2000, 40000 - (Date.now() - _t0));
+          setTimeout(() => finish(false), remaining);
+        });
         waitedMs = Date.now() - switchStart;
-        _dbg('switch loop done switched=' + switched + ' waitedMs=' + waitedMs);
-        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch — Teams tab may be backgrounded (Chrome throttles bg-tab timers); bring it to the foreground and retry.', target_name: name, matched_rail: firstLine(match) }; }
+        _dbg('switch done switched=' + switched + ' waitedMs=' + waitedMs + ' titleNow=' + document.title.slice(0,40));
+        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch — Teams tab may be heavily backgrounded by Chrome. Bring the Forge extension Chrome window to the foreground and retry.', target_name: name, matched_rail: firstLine(match) }; }
       }
       const matchedThreadId = match ? threadIdOf(match) : null;
       _dbg('starting harvest');
