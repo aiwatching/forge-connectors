@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.24"
+version: "0.10.25"
 author: forge
 category: connector
 mode: browser-side
@@ -104,20 +104,15 @@ settings:
     description: "Usually https://teams.microsoft.com"
     default: "https://teams.microsoft.com"
     required: true
-  # Chat-interaction tools (read_chat / send_message) need a TRUSTED click
-  # to switch chats, which only fires when the Teams tab is visible. In
-  # background tabs Chrome throttles JS so heavily that switching can take
-  # minutes and blow the 60s RPC cap. Default behavior: fast-fail (~200ms)
-  # with a clear error if the tab is hidden. Pass wait_for_bg_tab=true on
-  # any specific call if you knowingly want to wait it out (unattended
-  # automation). Channel reads (read_channel) ignore this — they're
-  # bg-safe via MutationObserver and must work for monitoring jobs.
-  wait_for_bg_tab:
-    type: boolean
-    label: Allow chat tools to wait when Teams tab is hidden
-    description: "Default off: read_chat/send_message fail fast when the Teams tab is hidden (Chrome throttles bg-tab JS to minutes/tick). Turn on for unattended automation that can tolerate slow / unreliable switches. (Currently advisory — pass wait_for_bg_tab=true per call to override.)"
-    default: false
-    required: false
+  # For unattended automation (chat reads/sends while Teams tab is in the
+  # background) enable the Forge extension's "Activate connector tab while
+  # running (steals focus)" toggle in the extension's Settings tab. The
+  # extension auto-activates the Teams tab before each script run and
+  # restores your previous tab/window after — this bypasses Chrome's
+  # bg-tab throttling that would otherwise make chat switching unreliable
+  # (channel reads stay bg-safe via MutationObserver regardless). No
+  # connector-side setting — the extension toggle covers all browser
+  # connectors uniformly.
 
 host_match: "{base_url}/*"
 login_redirect: "login.microsoftonline.com"
@@ -295,12 +290,13 @@ tools:
       to 30s for the chat switch to complete.
 
       ⚠ If this returns `{ ok: false, error: "Teams tab is hidden ..." }`:
-      SURFACE THE ERROR TO THE USER and STOP. DO NOT silently retry with
-      `wait_for_bg_tab=true`. That flag only helps for lightly-throttled
-      tabs; tabs hidden 5+ minutes hit Chrome's "intensive throttling"
-      that PAUSES JS execution entirely — even waiting forever won't
-      switch the chat until the user brings the Teams tab on-screen.
-      Tell the user: "Please bring the Teams tab on-screen, then retry."
+      SURFACE THE ERROR TO THE USER and STOP. Do not retry. The Teams tab
+      is in a background state where Chrome throttles JS — chat switching
+      can't proceed. Tell the user EITHER (a) bring the Teams tab
+      on-screen and retry, OR (b) enable the Forge extension's "Activate
+      connector tab while running (steals focus)" toggle in the
+      extension's Settings tab, which auto-activates the tab before each
+      run and restores their previous tab/window after.
     parameters:
       name:
         type: string
@@ -310,10 +306,6 @@ tools:
         type: number
         label: Max messages (most recent)
         default: 50
-      wait_for_bg_tab:
-        type: boolean
-        label: Wait even if Teams tab is hidden (default fast-fail in ~200ms)
-        default: false
     returns: "{ ok, chat_title, thread_id, messages: [{ author, body, timestamp, attachments:[{name,url}], images:[{url,alt,width,height}] }], total, switched_in_ms }"
     page:
       url: "{base_url}/v2/"
@@ -328,13 +320,14 @@ tools:
       const _t0 = Date.now();
       const within = () => Date.now() - _t0 < 45000;
 
-      // Background-tab fast-fail. When the Teams tab is hidden, Chrome
-      // throttles JS so heavily that the rail click+switch can take minutes
-      // and blow the 60s RPC cap. Default: return a clear error in ~ms.
-      // Pass wait_for_bg_tab=true to bypass (for unattended automation).
-      const waitForBgTab = !!args.wait_for_bg_tab;
-      if (!waitForBgTab && document.visibilityState === 'hidden') {
-        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — chat switching is unreliable in this state). Bring the Teams tab on-screen, OR pass wait_for_bg_tab=true to wait it out anyway.', visibilityState: 'hidden' };
+      // Background-tab fast-fail. Chrome throttles JS in hidden tabs so
+      // heavily (observed setTimeout(500) → 80s+) that rail click+switch
+      // can't complete inside the 60s RPC cap. Return a clear error in
+      // ~ms. For unattended automation, enable the Forge extension's
+      // "Activate connector tab while running" toggle — the extension
+      // auto-activates the tab and restores focus, removing this guard.
+      if (document.visibilityState === 'hidden') {
+        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — chat switching is unreliable). Bring the Teams tab on-screen, OR enable the Forge extension\'s "Activate connector tab while running (steals focus)" toggle in the extension Settings tab for unattended automation.', visibilityState: 'hidden' };
       }
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
@@ -1233,10 +1226,11 @@ tools:
       A second attempt with the same wording produces the same failure;
       with different wording it risks delivering to the wrong recipient.
 
-      Specifically for `"Teams tab is hidden ..."` errors: DO NOT silently
-      retry with `wait_for_bg_tab=true`. Chrome's intensive-throttling on
-      tabs hidden 5+ min PAUSES JS — even waiting forever won't deliver.
-      Tell the user: "Please bring the Teams tab on-screen, then retry."
+      Specifically for `"Teams tab is hidden ..."` errors: surface to the
+      user and stop. Tell them to EITHER (a) bring the Teams tab on-screen
+      and retry, OR (b) enable the Forge extension's "Activate connector
+      tab while running (steals focus)" toggle in the extension Settings
+      tab — that auto-activates the tab per call and restores focus after.
 
       Target resolution:
 
@@ -1268,10 +1262,6 @@ tools:
         type: string
         label: Chat name (optional — substring, case-insensitive). Used only when email is omitted. Pass a SHORT clean display name (e.g. "Bin Xu") — no titles, parentheticals, or extra words; Teams autosuggest resolves a bare name fastest.
         required: false
-      wait_for_bg_tab:
-        type: boolean
-        label: Wait even if Teams tab is hidden (default fast-fail in ~200ms)
-        default: false
     returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
     page:
       url: "{base_url}/v2/"
@@ -1283,10 +1273,12 @@ tools:
       const email = String(args.email || '').trim();
       const name = String(args.name || '').trim();
       // Background-tab fast-fail. Search-box and Send-button click both need
-      // a visible tab to fire trusted-ish events reliably (see read_chat).
-      // Default: return clear error in ~ms instead of waiting out timeouts.
-      if (!args.wait_for_bg_tab && document.visibilityState === 'hidden') {
-        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — send is unreliable). Bring the Teams tab on-screen, OR pass wait_for_bg_tab=true to try anyway.', visibilityState: 'hidden' };
+      // a visible tab to fire reliably (see read_chat for the trusted-event
+      // analysis). For unattended automation, enable the Forge extension's
+      // "Activate connector tab while running" toggle — the extension
+      // auto-activates the tab and restores focus, removing this guard.
+      if (document.visibilityState === 'hidden') {
+        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — send is unreliable). Bring the Teams tab on-screen, OR enable the Forge extension\'s "Activate connector tab while running (steals focus)" toggle in the extension Settings tab.', visibilityState: 'hidden' };
       }
       // Email is the canonical identifier — when set, skip the left-rail
       // (those are display names, ambiguous) and drive the search box
