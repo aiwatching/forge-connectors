@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.22"
+version: "0.10.23"
 author: forge
 category: connector
 mode: browser-side
@@ -104,6 +104,20 @@ settings:
     description: "Usually https://teams.microsoft.com"
     default: "https://teams.microsoft.com"
     required: true
+  # Chat-interaction tools (read_chat / send_message) need a TRUSTED click
+  # to switch chats, which only fires when the Teams tab is visible. In
+  # background tabs Chrome throttles JS so heavily that switching can take
+  # minutes and blow the 60s RPC cap. Default behavior: fast-fail (~200ms)
+  # with a clear error if the tab is hidden. Pass wait_for_bg_tab=true on
+  # any specific call if you knowingly want to wait it out (unattended
+  # automation). Channel reads (read_channel) ignore this — they're
+  # bg-safe via MutationObserver and must work for monitoring jobs.
+  wait_for_bg_tab:
+    type: boolean
+    label: Allow chat tools to wait when Teams tab is hidden
+    description: "Default off: read_chat/send_message fail fast when the Teams tab is hidden (Chrome throttles bg-tab JS to minutes/tick). Turn on for unattended automation that can tolerate slow / unreliable switches. (Currently advisory — pass wait_for_bg_tab=true per call to override.)"
+    default: false
+    required: false
 
 host_match: "{base_url}/*"
 login_redirect: "login.microsoftonline.com"
@@ -288,6 +302,10 @@ tools:
         type: number
         label: Max messages (most recent)
         default: 50
+      wait_for_bg_tab:
+        type: boolean
+        label: Wait even if Teams tab is hidden (default fast-fail in ~200ms)
+        default: false
     returns: "{ ok, chat_title, thread_id, messages: [{ author, body, timestamp, attachments:[{name,url}], images:[{url,alt,width,height}] }], total, switched_in_ms }"
     page:
       url: "{base_url}/v2/"
@@ -301,13 +319,15 @@ tools:
       // before the 60s RPC kill.
       const _t0 = Date.now();
       const within = () => Date.now() - _t0 < 45000;
-      // Phase markers → DOM (shared across worlds). isolated-world console.log
-      // never reaches CDP/DevTools; data-attribute on <html> does. Read via
-      // `document.documentElement.dataset.forgeDbgLog` in DevTools after a
-      // connector run to see exactly where read_chat got to.
-      const _dbg = (s) => { try { const el = document.documentElement; el.dataset.forgeDbg = (Date.now() - _t0) + 'ms ' + s; el.dataset.forgeDbgLog = ((el.dataset.forgeDbgLog || '') + ' | ' + (Date.now() - _t0) + ':' + s).slice(-1200); } catch {} };
-      try { document.documentElement.dataset.forgeDbgLog = ''; } catch {}
-      _dbg('START name=' + name);
+
+      // Background-tab fast-fail. When the Teams tab is hidden, Chrome
+      // throttles JS so heavily that the rail click+switch can take minutes
+      // and blow the 60s RPC cap. Default: return a clear error in ~ms.
+      // Pass wait_for_bg_tab=true to bypass (for unattended automation).
+      const waitForBgTab = !!args.wait_for_bg_tab;
+      if (!waitForBgTab && document.visibilityState === 'hidden') {
+        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — chat switching is unreliable in this state). Bring the Teams tab on-screen, OR pass wait_for_bg_tab=true to wait it out anyway.', visibilityState: 'hidden' };
+      }
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
       // chats/teams/menu items). Covers normal + muted chats.
@@ -372,9 +392,7 @@ tools:
       }
       waitedForReadyMs = Date.now() - readyStart;
       const railCount = document.querySelectorAll(CHAT_SEL).length;
-      _dbg('rail ready count=' + railCount + ' waited=' + waitedForReadyMs);
       if (railCount === 0) {
-        _dbg('EXIT rail empty');
         return { ok: false, error: 'Teams did not finish loading in time — try again or refresh the tab.' };
       }
       match = pickBest();
@@ -383,9 +401,7 @@ tools:
         const seeMore = [...document.querySelectorAll('[role="treeitem"]')].find(el => /^See more$/i.test(firstLine(el)));
         if (seeMore) { try { seeMore.click(); } catch {} expandedSeeMore = true; await new Promise(r => setTimeout(r, 900)); match = pickBest(); }
       }
-      _dbg('match=' + (match ? firstLine(match) : 'NONE') + ' score=' + (match ? scoreItem(match) : 0) + ' seeMore=' + expandedSeeMore);
       if (!match) {
-        _dbg('EXIT no match');
         return {
           ok: false,
           error: `No chat matching "${name}" in the left rail. The rail lists recent chats by DISPLAY NAME (not email) — pass the person's display name (e.g. "Dancheng Sun"), or open the chat in Teams once so it appears in the rail.`,
@@ -395,11 +411,9 @@ tools:
       }
       const matchedName = firstLine(match);
       let alreadyHere = document.title.toLowerCase().includes(matchedName.toLowerCase());
-      _dbg('alreadyHere=' + alreadyHere + ' title=' + document.title.slice(0,60));
       if (!alreadyHere) {
         const oldMids = new Set([...document.querySelectorAll('[data-tid="chat-pane-message"]')].map(e => e.getAttribute('data-mid')).filter(Boolean));
-        _dbg('clicking match, oldMids=' + oldMids.size);
-        try { match.click(); _dbg('clicked OK'); } catch (e) { _dbg('CLICK THREW: ' + (e && e.message)); }
+        try { match.click(); } catch (e) { }
         // Background-tab Chrome throttles setTimeout to 80+s/tick — any
         // setTimeout polling loop blows the 60s RPC cap (proven live).
         // MutationObserver fires on real DOM events, NOT timers, so it's
@@ -422,12 +436,9 @@ tools:
           setTimeout(() => finish(false), remaining);
         });
         waitedMs = Date.now() - switchStart;
-        _dbg('switch done switched=' + switched + ' waitedMs=' + waitedMs + ' titleNow=' + document.title.slice(0,40));
-        if (!switched) { _dbg('EXIT switch timeout'); return { ok: false, error: 'Timed out waiting for chat to switch — Teams tab may be heavily backgrounded by Chrome. Bring the Forge extension Chrome window to the foreground and retry.', target_name: name, matched_rail: firstLine(match) }; }
+        if (!switched) { return { ok: false, error: 'Timed out waiting for chat to switch — Teams tab may be heavily backgrounded by Chrome. Bring the Forge extension Chrome window to the foreground and retry.', target_name: name, matched_rail: firstLine(match) }; }
       }
       const matchedThreadId = match ? threadIdOf(match) : null;
-      _dbg('starting harvest');
-
       // 4. Extract messages. Prefer time[datetime] (clean ISO) over the
       //    human "Yesterday 5:27 PM" timestamp text. Attachments + pasted
       //    screenshots matter for issue analysis — images expose the REAL
@@ -472,7 +483,6 @@ tools:
       }).filter(im => im.url);
 
       const items = [...document.querySelectorAll('[data-tid="chat-pane-item"]')];
-      _dbg('harvest items=' + items.length);
       const messages = items.map(item => {
         const msg = item.querySelector('[data-tid="chat-pane-message"]');
         const mid = msg?.getAttribute('data-mid') || '';
@@ -497,7 +507,6 @@ tools:
       const chatTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
 
       const limit = args.limit || 50;
-      _dbg('harvest done messages=' + messages.length + ' RETURN');
       return {
         ok: true,
         chat_title: chatTitle,
@@ -695,6 +704,11 @@ tools:
       const streamCount = () => document.querySelectorAll('[data-tid="channel-pane-message"]').length;
       const alreadyHere = document.title.toLowerCase().includes(cLower);
       let waitedMs = 0, switched = false, reopened = false;
+      // Background-tab safe: MutationObserver fires on real DOM events, not
+      // setTimeout, so it works even when Chrome heavily throttles bg-tab
+      // timers (a 500ms tick was observed at 80+s in real bg state — any
+      // setTimeout polling blows the 60s RPC cap). Channel-monitoring jobs
+      // need this path to be reliable while the user is doing other things.
       if (!(alreadyHere && streamCount() > 0)) {
         for (let attempt = 0; attempt < 2 && !switched; attempt++) {
           const oldKeys = new Set(
@@ -703,14 +717,23 @@ tools:
           try { channel.click(); } catch (e) {}
           if (attempt > 0) reopened = true;
           const t0 = Date.now();
-          while (Date.now() - t0 < 9000) {
-            await new Promise(r => setTimeout(r, 200));
-            waitedMs += 200;
+          const checkStream = () => {
             const cur = [...document.querySelectorAll('[data-tid="channel-pane-message"]')].map(e => e.id).filter(Boolean);
             // alreadyHere: accept any rendered message (re-click may not mint
             // new ids); otherwise require a freshly-appeared message.
-            if (cur.length > 0 && (alreadyHere || cur.some(k => !oldKeys.has(k)))) { switched = true; break; }
-          }
+            return cur.length > 0 && (alreadyHere || cur.some(k => !oldKeys.has(k)));
+          };
+          await new Promise(resolve => {
+            if (checkStream()) { resolve(); return; }
+            let done = false;
+            const finish = () => { if (done) return; done = true; try { obs.disconnect(); } catch {} resolve(); };
+            const obs = new MutationObserver(() => { if (checkStream()) { switched = true; finish(); } });
+            obs.observe(document.body, { childList: true, subtree: true });
+            // Hard cap per attempt — itself bg-throttled, but observer path
+            // resolves fast on real DOM updates.
+            setTimeout(finish, 12000);
+          });
+          waitedMs = Date.now() - t0;
         }
         if (!switched && streamCount() === 0) {
           return {
@@ -1227,6 +1250,10 @@ tools:
         type: string
         label: Chat name (optional — substring, case-insensitive). Used only when email is omitted. Pass a SHORT clean display name (e.g. "Bin Xu") — no titles, parentheticals, or extra words; Teams autosuggest resolves a bare name fastest.
         required: false
+      wait_for_bg_tab:
+        type: boolean
+        label: Wait even if Teams tab is hidden (default fast-fail in ~200ms)
+        default: false
     returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
     page:
       url: "{base_url}/v2/"
@@ -1237,6 +1264,12 @@ tools:
       if (!text) return { ok: false, error: 'text is required and must be non-empty (accepts text / message / body / content)' };
       const email = String(args.email || '').trim();
       const name = String(args.name || '').trim();
+      // Background-tab fast-fail. Search-box and Send-button click both need
+      // a visible tab to fire trusted-ish events reliably (see read_chat).
+      // Default: return clear error in ~ms instead of waiting out timeouts.
+      if (!args.wait_for_bg_tab && document.visibilityState === 'hidden') {
+        return { ok: false, error: 'Teams tab is hidden (Chrome throttles bg-tab JS — send is unreliable). Bring the Teams tab on-screen, OR pass wait_for_bg_tab=true to try anyway.', visibilityState: 'hidden' };
+      }
       // Email is the canonical identifier — when set, skip the left-rail
       // (those are display names, ambiguous) and drive the search box
       // straight with the email string.
