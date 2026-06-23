@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.28"
+version: "0.10.29"
 author: forge
 category: connector
 mode: browser-side
@@ -104,16 +104,20 @@ settings:
     description: "Usually https://teams.microsoft.com"
     default: "https://teams.microsoft.com"
     required: true
-  # M365 tenant email — used by the unified IdP login to fill the Microsoft
-  # email entry page that gates Teams (login.microsoftonline.com). Leave
-  # blank to fall back to the SSO username (works when your M365 tenant
-  # email equals your SSO email). Override only when Teams uses a
-  # DIFFERENT tenant domain than what other SAML SPs (mantis / pmdb / owa)
-  # accept — e.g. SSO is zliu@fortinet.com but M365 is zliu@fortinet-us.com.
+  # M365 tenant email — fills login.microsoftonline.com's email gate
+  # (input#i0116) during unified IdP login. Three input styles:
+  #   @fortinet-us.com         Suffix only. Forge prepends the unified-login
+  #                            username at sign-in time. Recommended when
+  #                            the local-part matches your SSO username.
+  #   zliu@fortinet-us.com     Full email — used verbatim. Use when the
+  #                            local-part differs from your SSO username.
+  #   (blank)                  Falls back to the unified-login username
+  #                            (with the displayEmail domain auto-appended
+  #                            if the username has no '@').
   tenant_email:
     type: string
-    label: M365 tenant email (leave blank to use SSO email)
-    description: "Used by unified IdP login to fill login.microsoftonline.com's email page (input#i0116). Leave blank to use your SSO username — works when your M365 tenant email is the same as your SSO email. Override only when Teams uses a DIFFERENT @<tenant>.com address (e.g. zliu@fortinet-us.com vs SSO zliu@fortinet.com) so Microsoft routes you to the right SAML IdP."
+    label: M365 tenant email or domain suffix (e.g. @fortinet-us.com)
+    description: "Fills login.microsoftonline.com's email page (input#i0116). Recommended: enter just the M365 domain with a leading '@' (e.g. @fortinet-us.com) — Forge prepends your unified-login username at sign-in time, so you don't repeat it. You may also enter a full email (zliu@fortinet-us.com) to override the local-part, or leave blank when M365 and your SSO IdP use the same address."
     required: false
   # For unattended automation (chat reads/sends while Teams tab is in the
   # background) enable the Forge extension's "Activate connector tab while
