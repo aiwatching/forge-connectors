@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.23"
+version: "0.10.24"
 author: forge
 category: connector
 mode: browser-side
@@ -293,6 +293,14 @@ tools:
 
       Waits up to 30s for Teams to hydrate (handles cold load) and up
       to 30s for the chat switch to complete.
+
+      ⚠ If this returns `{ ok: false, error: "Teams tab is hidden ..." }`:
+      SURFACE THE ERROR TO THE USER and STOP. DO NOT silently retry with
+      `wait_for_bg_tab=true`. That flag only helps for lightly-throttled
+      tabs; tabs hidden 5+ minutes hit Chrome's "intensive throttling"
+      that PAUSES JS execution entirely — even waiting forever won't
+      switch the chat until the user brings the Teams tab on-screen.
+      Tell the user: "Please bring the Teams tab on-screen, then retry."
     parameters:
       name:
         type: string
@@ -503,8 +511,13 @@ tools:
         };
       }).filter(m => m.body || m.author || m.attachments.length || m.images.length);
 
+      // document.title updates async after navigation — observed stale
+      // (showing the PREVIOUS chat name) right after a switch even though
+      // messages.length already reflects the new chat. Prefer matchedName
+      // (taken from the rail item we clicked) as authoritative.
       const titleParts = (document.title || '').split('|').map(s => s.trim()).filter(Boolean);
-      const chatTitle = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
+      const titleChat = titleParts.length >= 3 ? titleParts[1] : (titleParts[0] || '');
+      const chatTitle = matchedName || titleChat;
 
       const limit = args.limit || 50;
       return {
@@ -1219,6 +1232,11 @@ tools:
       params (different `name`, different `email`, dropping params, etc).
       A second attempt with the same wording produces the same failure;
       with different wording it risks delivering to the wrong recipient.
+
+      Specifically for `"Teams tab is hidden ..."` errors: DO NOT silently
+      retry with `wait_for_bg_tab=true`. Chrome's intensive-throttling on
+      tabs hidden 5+ min PAUSES JS — even waiting forever won't deliver.
+      Tell the user: "Please bring the Teams tab on-screen, then retry."
 
       Target resolution:
 
