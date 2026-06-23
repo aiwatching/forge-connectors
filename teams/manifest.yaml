@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.17"
+version: "0.10.18"
 author: forge
 category: connector
 mode: browser-side
@@ -302,7 +302,12 @@ tools:
       // never blow the cap (≈50s budget leaves headroom for harvest + return).
       const _t0 = Date.now();
       const within = () => Date.now() - _t0 < 45000;
-      const _dbg = (s) => { try { console.log('[forge-teams read_chat ' + (Date.now() - _t0) + 'ms] ' + s); } catch {} };
+      // Phase markers written to the DOM (not console): the script runs in the
+      // extension's ISOLATED world, whose console.log does NOT surface to CDP /
+      // DevTools. The DOM is shared across worlds, so a data-attribute is the
+      // one channel an external observer (chrome-devtools) can actually read.
+      const _dbg = (s) => { try { const el = document.documentElement; el.dataset.forgeDbg = (Date.now() - _t0) + 'ms ' + s; el.dataset.forgeDbgLog = ((el.dataset.forgeDbgLog || '') + ' | ' + (Date.now() - _t0) + ':' + s).slice(-1000); } catch {} };
+      try { document.documentElement.dataset.forgeDbgLog = ''; } catch {}
       _dbg('START name=' + name);
 
       // Precise chat anchor — data-item-type, NOT aria-level (which mixes
