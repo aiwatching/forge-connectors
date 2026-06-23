@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.27"
+version: "0.10.28"
 author: forge
 category: connector
 mode: browser-side
@@ -105,15 +105,15 @@ settings:
     default: "https://teams.microsoft.com"
     required: true
   # M365 tenant email — used by the unified IdP login to fill the Microsoft
-  # email entry page that gates Teams (login.microsoftonline.com). This is
-  # NOT the same as the user's SSO username (zliu / zliu@fortinet.com);
-  # Teams uniquely needs the per-tenant address (e.g. zliu@fortinet-us.com)
-  # so Microsoft routes to the right SAML IdP. Other SAML SPs (mantis /
-  # pmdb / owa) reuse the SSO username via the IdP's own form.
+  # email entry page that gates Teams (login.microsoftonline.com). Leave
+  # blank to fall back to the SSO username (works when your M365 tenant
+  # email equals your SSO email). Override only when Teams uses a
+  # DIFFERENT tenant domain than what other SAML SPs (mantis / pmdb / owa)
+  # accept — e.g. SSO is zliu@fortinet.com but M365 is zliu@fortinet-us.com.
   tenant_email:
     type: string
-    label: M365 tenant email (e.g. zliu@fortinet-us.com)
-    description: "Used by unified IdP login to fill login.microsoftonline.com's email page (input#i0116). Differs from SSO username — Teams needs the @<m365-tenant>.com address (e.g. @fortinet-us.com / @fortinet-emea.com) so Microsoft routes you to the right SAML IdP."
+    label: M365 tenant email (leave blank to use SSO email)
+    description: "Used by unified IdP login to fill login.microsoftonline.com's email page (input#i0116). Leave blank to use your SSO username — works when your M365 tenant email is the same as your SSO email. Override only when Teams uses a DIFFERENT @<tenant>.com address (e.g. zliu@fortinet-us.com vs SSO zliu@fortinet.com) so Microsoft routes you to the right SAML IdP."
     required: false
   # For unattended automation (chat reads/sends while Teams tab is in the
   # background) enable the Forge extension's "Activate connector tab while
