@@ -1,11 +1,14 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.29"
+version: "0.10.30"
 author: forge
 category: connector
 mode: browser-side
 runner: isolated
+# Teams misbehaves in the extension (throttled/focus-stealing); prefer the
+# off-screen CDP runtime, fall back to the extension if CDP is unavailable.
+runtime: cdp
 # Teams web is slow to load — keep the tab Forge opens alive and reuse it
 # (host_match match) on subsequent calls instead of reopening every time.
 tab_strategy: persistent
