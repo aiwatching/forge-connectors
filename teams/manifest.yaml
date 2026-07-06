@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.30"
+version: "0.10.31"
 author: forge
 category: connector
 mode: browser-side
@@ -136,9 +136,16 @@ host_match: "{base_url}/*"
 login_redirect: "login.microsoftonline.com"
 
 test:
-  description: "Opens a Teams tab; ✓ if logged in, ✗ if redirected to login.microsoftonline.com."
+  description: "Opens a Teams tab; ✓ if logged in, ✗ if redirected to login OR the top-right avatar shows Unknown presence (dead/stale SW-cached session)."
   probe: browser
   timeout_ms: 45000  # Teams web is slow to settle on first load
+  # Stale-session detection: a dead session still renders the cached shell
+  # (looks logged in, old chats visible) but never redirects to login — the
+  # only tell is the top-right ME avatar's presence = "Unknown". Match it two
+  # ways on the me-control-avatar-trigger button (scoped to YOUR avatar so an
+  # Offline colleague's identical ring doesn't trip it): aria-label "…status
+  # Unknown", or the empty hollow-ring glyph (path M5 1a4 4…). Present → logged out.
+  auth_required_selector: '[data-tid="me-control-avatar-trigger"][aria-label*="Unknown" i], [data-tid="me-control-avatar-trigger"] svg path[d^="M5 1a4 4 0 1 0 0 8"]'
 
 tools:
   list_chats:
