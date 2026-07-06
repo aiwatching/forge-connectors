@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.31"
+version: "0.10.32"
 author: forge
 category: connector
 mode: browser-side
@@ -1338,6 +1338,15 @@ tools:
       on_target: "teams.microsoft.com"
       settle_after_load_ms: 5000
     script: |
+      // Dead/stale-session self-check. A re-auth-needed Teams still renders the
+      // cached shell (looks logged in, old chats visible) but the live connection
+      // is dead — the tell is the top-right ME presence = "Unknown". Bail early
+      // with needs_login instead of blindly searching and failing with a
+      // misleading "no person match", so the caller re-authenticates (and, being
+      // a write that returns an error, is not auto-retried).
+      if (document.querySelector('[data-tid="me-control-avatar-trigger"][aria-label*="Unknown" i], [data-tid="me-control-avatar-trigger"] svg path[d^="M5 1a4 4 0 1 0 0 8"]')) {
+        return { ok: false, needs_login: true, error: 'Teams session expired — presence is "Unknown" (the cached UI looks logged in, but the live connection is dead). Re-authenticate Teams, then retry.' };
+      }
       const text = String(args.text || args.message || args.body || args.content || '').trim();
       if (!text) return { ok: false, error: 'text is required and must be non-empty (accepts text / message / body / content)' };
       const email = String(args.email || '').trim();
