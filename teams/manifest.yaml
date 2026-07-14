@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.32"
+version: "0.10.33"
 author: forge
 category: connector
 mode: browser-side
@@ -1409,6 +1409,27 @@ tools:
         }
         return -1;
       }
+      // The open chat's header participants (data-tid="participant-*", same
+      // selector get_current_chat_info uses). document.title is an unreliable
+      // switch signal — it doesn't flip when opening your OWN / an already-open
+      // chat, which is why a search-open used to falsely report "didn't open"
+      // and only worked on the 2nd call. Confirming by participant name is both
+      // the missing positive signal AND a guard against sending to the wrong chat.
+      function chatHeaderMatches(needle) {
+        if (!needle) return false;
+        return [...document.querySelectorAll('[data-tid^="participant-"]')].some(p => {
+          const n = (p.innerText || '').trim().split('\n')[0].toLowerCase();
+          return n && (n.includes(needle) || needle.includes(n));
+        });
+      }
+      async function waitHeaderMatch(needle, maxMs) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < maxMs) {
+          if (chatHeaderMatches(needle)) return Date.now() - t0;
+          await new Promise(r => setTimeout(r, 250));
+        }
+        return -1;
+      }
 
       if (searchQuery) {
         const lower = searchQuery.toLowerCase();
@@ -1544,16 +1565,23 @@ tools:
             searchPicked = candidates[0].text;
             resolveTier = 'search';
 
+            const headerNeedle = (typeof name === 'string' && name.trim()) ? name.trim().toLowerCase() : lower;
             const titleBefore = document.title;
             try { candidates[0].el.click(); } catch {}
-            // Search popup might intercept the click — also try keyboard Enter as fallback
-            const took = await waitForChatSwitch(null, titleBefore, 12000);
+            // Confirm the switch. document.title alone is unreliable (it doesn't
+            // flip for your own / an already-open chat — the "worked on the 2nd
+            // try" bug), so also accept a participant-header match, which also
+            // guards against landing on the wrong chat.
+            let took = await waitForChatSwitch(null, titleBefore, 12000);
+            if (took < 0 && chatHeaderMatches(headerNeedle)) took = 0;
             if (took < 0) {
-              // Fallback: synthesize Enter key on the search input
+              // Fallback: keyboard Enter on the search input, then re-confirm by
+              // title OR header before giving up.
               searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-              const took2 = await waitForChatSwitch(null, titleBefore, 8000);
+              let took2 = await waitForChatSwitch(null, titleBefore, 8000);
+              if (took2 < 0) took2 = await waitHeaderMatch(headerNeedle, 6000);
               if (took2 < 0) {
-                return { ok: false, error: 'Clicking the search result did not open a chat', search_picked: searchPicked };
+                return { ok: false, error: 'Clicking the search result did not open a chat (no title change and no matching chat header).', search_picked: searchPicked, header_needle: headerNeedle };
               }
               switchedMs = took2;
             } else {
