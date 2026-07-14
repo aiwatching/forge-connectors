@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.33"
+version: "0.10.34"
 author: forge
 category: connector
 mode: browser-side
@@ -1330,7 +1330,7 @@ tools:
         required: false
       name:
         type: string
-        label: Chat name (optional — substring, case-insensitive). Used only when email is omitted. Pass a SHORT clean display name (e.g. "Bin Xu") — no titles, parentheticals, or extra words; Teams autosuggest resolves a bare name fastest.
+        label: Chat name (optional — substring, case-insensitive). Used only when email is omitted. Pass ONLY the SHORT bare display name (e.g. "Bin Xu") — NOT a search query. Do NOT prefix it with Teams search operators like "from:", "to:" or "in:" (those make Teams filter MESSAGES instead of offering the person, so the chat never opens). No titles, parentheticals, or extra words; Teams autosuggest resolves a bare name fastest.
         required: false
     returns: "{ ok, sent_text, chat_title, switched, switched_in_ms, resolve_tier, groups_expanded, search_picked }"
     page:
@@ -1363,11 +1363,17 @@ tools:
       // (those are display names, ambiguous) and drive the search box
       // straight with the email string.
       // Clean the typed query: Teams autosuggest resolves a bare name
-      // fast, but a decorated string (e.g. "Bin Xu (in message…)", trailing
-      // titles/parentheticals the caller tacked on) confuses it. Strip from
-      // the first parenthesis/bracket onward and collapse whitespace. Emails
-      // have no parens so they're untouched.
-      const clean = (s) => s.replace(/[([{].*$/, '').replace(/\s+/g, ' ').trim();
+      // fast, but a decorated string confuses it. (a) Strip a leading Teams
+      // search OPERATOR (from:/to:/in:/sent:/has:/subject:) — those turn the
+      // people-picker into a MESSAGE filter, so the person is never offered and
+      // the chat can't be opened (a caller sometimes tacks on "from:"). (b) Strip
+      // from the first parenthesis/bracket onward. (c) Collapse whitespace.
+      // Emails have no parens/operators so they're untouched.
+      const clean = (s) => s
+        .replace(/^\s*(?:from|to|in|sent|has|subject)\s*:\s*/i, '')
+        .replace(/[([{].*$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
       const searchQuery = clean(email || name);
       const skipLeftRail = !!email;
 
