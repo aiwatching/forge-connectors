@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.34"
+version: "0.10.35"
 author: forge
 category: connector
 mode: browser-side
@@ -304,6 +304,89 @@ tools:
 
       const chatTitle = unique.map(p => p.name).join(', ');
       return { chat_title: chatTitle, participants: unique, url: location.href };
+
+  list_my_activity:
+    description: |
+      Read the Teams Activity feed (left rail) — the fast way to see what's
+      relevant to YOU without scanning every chat: @-mentions of you, reactions
+      to your messages, and channel mentions, newest first. Use this for
+      "any @ me?", "latest mentions", "who reacted to my message", "what did I
+      miss". Pure DOM read — opens the Activity app, changes nothing. For the
+      full message + thread, follow up with read_chat using the sender/source.
+    parameters:
+      limit:
+        type: number
+        label: Max feed items (most recent). Default 20, max 50.
+        required: false
+      only_mentions:
+        type: boolean
+        label: Only @-mentions of you (drops reactions and channel-only mentions).
+        required: false
+    returns: "{ ok, items: [{ from, type, title, text, time, item_id }], total, filtered }"
+    page:
+      url: "{base_url}/v2/"
+      on_target: "teams.microsoft.com"
+      settle_after_load_ms: 5000
+    script: |
+      const limit = Math.max(1, Math.min(Number(args.limit) || 20, 50));
+      const onlyMentions = !!args.only_mentions;
+      const clip = (s, n = 300) => (s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+      // Dead/stale-session self-check (same tell as the other tools).
+      if (document.querySelector('[data-tid="me-control-avatar-trigger"][aria-label*="Unknown" i]')) {
+        return { ok: false, needs_login: true, error: 'Teams session expired — presence is "Unknown" (cached UI looks logged in, live connection dead). Re-authenticate Teams, then retry.' };
+      }
+
+      // Open the Activity app (left rail). Idempotent — a click when already
+      // there just re-focuses it. aria-label is stable ("Activity (…)"); the
+      // data-tid is a random GUID, so don't key off it.
+      const navBtn = document.querySelector('button[aria-label^="Activity"]');
+      if (navBtn) { try { navBtn.click(); } catch {} }
+
+      // Wait for the feed to render.
+      let ready = false;
+      for (let i = 0; i < 40; i++) {
+        if (document.querySelector('[data-tid="activity-list-container"]') &&
+            document.querySelectorAll('[data-tid="activity-feed-list-item"]').length) { ready = true; break; }
+        await new Promise(r => setTimeout(r, 300));
+      }
+      if (!ready) return { ok: false, error: 'Activity feed did not load in time — bring the Teams tab on-screen and retry.' };
+
+      // Each item's title aria-label is a clean summary, e.g.
+      //   "Joseph Hoelbrandt mentioned you"
+      //   "Bin Xu reacted with like emoji to your message"
+      //   "Michael Dodge mentioned Device Support Questions"   (channel, not you)
+      // Type + sender come from it; the item's full text carries preview +
+      // source + time; item_id is the numeric suffix on the media node.
+      const classify = (t) => /\bmentioned you\b/i.test(t) ? 'mention'
+        : /\breacted\b/i.test(t) ? 'reaction'
+        : /\bmentioned\b/i.test(t) ? 'channel_mention'
+        : /\breplied\b/i.test(t) ? 'reply' : 'other';
+      const senderOf = (t) => (t.split(/\s+(?:mentioned|reacted|replied|posted|published|shared)\b/i)[0] || '').trim();
+
+      const out = [];
+      for (const it of document.querySelectorAll('[data-tid="activity-feed-list-item"]')) {
+        const titleEl = it.querySelector('[data-tid="activity-feed-item-title"]');
+        const title = (titleEl && titleEl.getAttribute('aria-label')) ? titleEl.getAttribute('aria-label').trim() : clip(titleEl ? titleEl.innerText : '', 100);
+        if (!title) continue;
+        const type = classify(title);
+        if (onlyMentions && type !== 'mention') continue;
+        const media = it.querySelector('[data-tid^="activity-feed-item-media-"]');
+        const item_id = media ? (media.getAttribute('data-tid') || '').replace('activity-feed-item-media-', '') : '';
+        // Strip the leading "{sender} {verb …}" summary so text is just the
+        // preview + source + time. Verb-anchored (the item's fullText prefix
+        // doesn't exactly equal the title aria — e.g. reactions add "with X
+        // emoji" only in the aria — so a plain prefix-match wouldn't strip it).
+        const full = clip(it.innerText, 400);
+        let text = full;
+        const vm = full.match(/\b(?:mentioned you|reacted(?:\s+with.{0,40}?)?\s+to your message|mentioned|replied|posted|published)\b\s*/i);
+        if (vm) text = full.slice(vm.index + vm[0].length).trim();
+        if (!text) text = full;
+        const tm = text.match(/\b\d{1,2}\/\d{1,2}\b|\b\d+\s*(?:分钟|小时|minutes?|hours?|min|h)\b|昨天|yesterday/i);
+        out.push({ from: senderOf(title), type, title, text: clip(text, 240), time: tm ? tm[0] : '', item_id });
+        if (out.length >= limit) break;
+      }
+      return { ok: true, items: out, total: out.length, filtered: onlyMentions ? 'mentions' : 'all' };
 
   read_chat:
     description: |
