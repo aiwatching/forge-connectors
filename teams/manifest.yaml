@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.35"
+version: "0.10.36"
 author: forge
 category: connector
 mode: browser-side
@@ -1389,9 +1389,11 @@ tools:
 
       A. With `email` (PREFERRED — uniquely identifies a Teams user):
          Skip left-rail entirely (those are display names), drive the top
-         search box (#ms-searchux-input) directly with the email. Picks
-         the popup result whose innerText / aria-label contains the email,
-         falling back to the first match if none does.
+         search box (#ms-searchux-input) directly with the email. Picks the
+         popup result whose innerText / aria-label contains the email; if none
+         does it FAILS CLOSED (no blind first-row fallback). Before sending it
+         verifies the opened chat is a 1:1 (≤2 header participants) and ABORTS
+         if it resolved to a group chat — never broadcasts a DM.
 
       B. With `name` (substring of display name, may be ambiguous):
          Three tiers — (1) left-rail treeitem, (2) expand collapsed
@@ -1637,15 +1639,11 @@ tools:
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
               return { ok: false, error: 'Search popup did not appear within 12s', query: searchQuery };
             }
-            // Email mode fallback: backend already filtered to the person, so
-            // if no row literally contains the email, take the first
-            // non-command row rather than failing.
-            if (email && candidates.length === 0) {
-              for (const el of popup.querySelectorAll(SEL)) {
-                const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
-                if (txt && !isCommandRow(txt) && txt.length <= 200) { candidates.push({ el, text: txt }); break; }
-              }
-            }
+            // NO blind first-row fallback for email mode. The old code took the
+            // first non-command row on the false assumption "backend already
+            // filtered to the person" — it doesn't, so that sent to an
+            // arbitrary row (incl. group chats). Fail closed instead: a wrong
+            // recipient is far worse than a failed send.
             if (candidates.length === 0) {
               const preview = (popup.innerText || '').slice(0, 400);
               nativeSetter.call(searchInput, ''); searchInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1730,6 +1728,54 @@ tools:
         };
       }
 
+      // ── Fail-closed recipient guard (email mode) ──────────────────────
+      // `email` uniquely identifies ONE person, so the resolved chat MUST be a
+      // 1:1. Row matching in the search popup is a blind substring test, and a
+      // GROUP-CHAT row whose message preview merely CONTAINS the email will
+      // match — that once delivered a private summary to a 15-person group.
+      // Reading the open chat's header participants is the cheapest reliable
+      // check: a 1:1 shows at most 2 chips (the person, maybe yourself); a
+      // group shows many. If this is not a 1:1, ABORT before typing — a wrong /
+      // broadcast recipient is far worse than a failed send. Do NOT retry.
+      // Principle: never send to the wrong chat — rather fail than mis-deliver.
+      // Wait for the header roster to populate (same selector
+      // get_current_chat_info uses) — reading it too early returns an empty set
+      // and would pass by accident.
+      if (email || (typeof name === 'string' && name.trim())) {
+        const readParts = () => [...new Set(
+          [...document.querySelectorAll('[data-tid^="participant-"]')]
+            .map(p => (p.innerText || '').trim().split('\n')[0]).filter(Boolean)
+        )];
+        let partNames = [];
+        for (let i = 0; i < 20 && partNames.length === 0; i++) {
+          partNames = readParts();
+          if (partNames.length === 0) await new Promise(r => setTimeout(r, 150));
+        }
+        const titleLc = (document.title || '').toLowerCase();
+
+        if (email) {
+          // email uniquely identifies ONE person → the opened chat MUST be a 1:1.
+          if (partNames.length === 0) {
+            return { ok: false, error: `Aborted before sending: could not read the chat's participants to confirm email "${email}" opened a 1:1 DM. Failing closed rather than risk a wrong recipient — verify manually and retry.`, resolve_tier: resolveTier, search_picked: searchPicked };
+          }
+          if (partNames.length > 2) {
+            return { ok: false, error: `Aborted before sending: email "${email}" resolved to a chat with ${partNames.length} participants (${partNames.slice(0, 6).join(', ')}${partNames.length > 6 ? ', …' : ''}) — refusing to deliver a person-targeted (DM) message to a GROUP chat. Verify the recipient; do NOT retry with the same params.`, resolved_participants: partNames, resolve_tier: resolveTier, search_picked: searchPicked };
+          }
+        } else {
+          // name mode: the opened chat MUST actually contain the requested name
+          // (name is a substring of the person's display name, or the group's
+          // title). If neither the roster nor the title contains it, resolution
+          // went sideways → abort. This does NOT block a legit group the user
+          // named — its title/roster contains the name.
+          const needle = name.trim().toLowerCase();
+          const inRoster = partNames.some(n => { const x = n.toLowerCase(); return x.includes(needle) || needle.includes(x); });
+          const inTitle = titleLc.includes(needle);
+          if (!inRoster && !inTitle) {
+            return { ok: false, error: `Aborted before sending: name "${name}" opened a chat (${partNames.slice(0, 6).join(', ') || document.title || 'unknown'}) whose participants/title do NOT contain "${name}" — refusing to send to an unrelated chat. Verify the target; do NOT retry with the same params.`, resolved_participants: partNames, resolve_tier: resolveTier, search_picked: searchPicked };
+          }
+        }
+      }
+
       // Inject text FIRST. The Send button (sendMessageCommands-send) only
       // renders/enables once the composer has content — checking for it
       // before typing was the bug: empty composer → "Send button not found".
@@ -1796,11 +1842,19 @@ tools:
         return { ok: false, error: `Message typed but send did not go through (tried ${sentVia}). Composer still holds the text.`, sent_via: sentVia };
       }
 
+      // Surface who it actually went to so the caller can verify the recipient
+      // (esp. name mode, which can legitimately resolve to a group chat).
+      const sentParticipants = [...new Set(
+        [...document.querySelectorAll('[data-tid^="participant-"]')]
+          .map(p => (p.innerText || '').trim().split('\n')[0]).filter(Boolean)
+      )];
       return {
         ok: true,
         sent_text: text,
         sent_via: sentVia,
         chat_title: chatTitle,
+        recipients: sentParticipants,
+        participant_count: sentParticipants.length,
         switched,
         switched_in_ms: switchedMs,
         resolve_tier: resolveTier,
