@@ -1,7 +1,7 @@
 id: teams
 name: Microsoft Teams
 icon: "💬"
-version: "0.10.36"
+version: "0.10.37"
 author: forge
 category: connector
 mode: browser-side
@@ -497,13 +497,42 @@ tools:
           for (let i = 0; i < 12 && !person && within(); i++) { await new Promise(r => setTimeout(r, 400)); person = matchPerson(); }
           if (person) {
             searchedPerson = firstLine(person);
-            (person.querySelector('[role="button"],a,button') || person).click();
-            // Wait for chat pane to populate. MutationObserver-style — but
-            // for simplicity reuse the same poll; tab is visible here so
-            // setTimeout isn't throttled.
+            // The person's display name (strip the "(ALIAS) Title" tail) — used
+            // to confirm the RIGHT chat opened.
+            const pName = ((searchedPerson.split(/[(\n,]/)[0]) || '').trim().toLowerCase();
+            // Click the SUGGESTION ROW itself — its default action opens the
+            // 1:1 chat. Do NOT click an inner button: the row's buttons are
+            // "Show Contact Card" (AUTOSUGGEST_ACTION_PERSONLPC) and
+            // "All results from …" — the former opens the person's PROFILE card
+            // (getting stuck there, never entering the chat), the latter a
+            // search view. Clicking the row opened the chat with 32 messages in
+            // testing; the old querySelector('button') opened the profile.
+            person.click();
+            // Opened when the title MATCHES this person (not merely "changed" —
+            // it doesn't flip if you were already near this chat, and can flip
+            // to the wrong one) AND its messages have finished loading. Messages
+            // stream in over ~1-2s (observed 0→18→26→34), so break only once the
+            // count STABILIZES: breaking on title-match alone returns ZERO
+            // (extraction runs before any message renders), breaking on
+            // first-message returns a partial list. Stable-at-0 = empty chat.
+            let matched = false, matchedAt = -1, lastCount = -1, stable = 0;
             for (let i = 0; i < 40 && within(); i++) {
-              await new Promise(r => setTimeout(r, 200)); waitedMs += 200;
-              if (document.title !== titleBefore && document.querySelectorAll('[data-tid="chat-pane-message"]').length > 0) { openedViaSearch = true; break; }
+              await new Promise(r => setTimeout(r, 300)); waitedMs += 300;
+              if (!matched) { matched = !!(pName && document.title.toLowerCase().includes(pName)); if (matched) matchedAt = i; }
+              if (!matched) continue;
+              const c = document.querySelectorAll('[data-tid="chat-pane-message"]').length;
+              if (c > 0) {
+                // Messages are streaming in — wait for the count to SETTLE
+                // (2 equal reads) so we don't grab a partial list.
+                if (c === lastCount) stable++; else { stable = 0; lastCount = c; }
+                if (stable >= 2) { openedViaSearch = true; break; }
+              } else if (i - matchedAt >= 14) {
+                // Title matched but still ZERO messages ~4s later → genuinely
+                // empty chat. (Do NOT accept 0 earlier — 0,0 right after opening
+                // just means messages haven't started rendering yet; that made
+                // read_chat return 0 for a chat that actually had 34 messages.)
+                openedViaSearch = true; break;
+              }
             }
           }
         } catch {}
@@ -1388,12 +1417,18 @@ tools:
       Target resolution:
 
       A. With `email` (PREFERRED — uniquely identifies a Teams user):
-         Skip left-rail entirely (those are display names), drive the top
-         search box (#ms-searchux-input) directly with the email. Picks the
-         popup result whose innerText / aria-label contains the email; if none
-         does it FAILS CLOSED (no blind first-row fallback). Before sending it
-         verifies the opened chat is a 1:1 (≤2 header participants) and ABORTS
-         if it resolved to a group chat — never broadcasts a DM.
+         Opens a New-message compose and drives the PEOPLE-PICKER
+         (#people-picker-input) — NOT the global search box, which mixes in
+         group chats / message hits. Only PEOPLE rows carry an email in their
+         data-tid (groups carry names), and the picker resolves aliases
+         (e.g. name@fortinet.com → the canonical name@fortinet-us.com). So it
+         takes the single PERSON the picker offers for the address (a group can
+         never match); if the picker offers several people it requires an exact
+         address to disambiguate. Before typing it confirms the target is a 1:1
+         with that person — either exactly one recipient chip, or an existing
+         1:1 / self-chat whose header participant matches. No person, ambiguous,
+         or unconfirmed → FAILS CLOSED (never guesses). Use `email` to DM a
+         person; use `name` to reach an existing group / meeting chat.
 
       B. With `name` (substring of display name, may be ambiguous):
          Three tiers — (1) left-rail treeitem, (2) expand collapsed
@@ -1522,7 +1557,103 @@ tools:
         return -1;
       }
 
-      if (searchQuery) {
+      // ─── Email → New-message people-picker (precise 1:1) ─────────────
+      // email uniquely identifies a PERSON. The global search box mixes in
+      // group chats + message hits (a group whose message PREVIEW contained the
+      // email once got picked → a private summary was broadcast to 15+ people).
+      // The New-message people-picker only offers PEOPLE and keys each entry by
+      // email in its data-tid, so we match EXACTLY and verify the selected
+      // recipient chip before typing. Fails closed — never guesses a recipient.
+      if (email) {
+        const emailLc = email.trim().toLowerCase();
+        // Reuse an already-open compose (a prior call may have left one) instead
+        // of failing when the "New message" button is absent because we're
+        // already in compose.
+        let picker = document.querySelector('#people-picker-input');
+        if (!picker) {
+          const newBtn = document.querySelector('button[aria-label^="New message"], button[aria-label^="New chat"]');
+          if (!newBtn) return { ok: false, error: 'Could not find the "New message" button to open the people-picker for an email send.' };
+          try { newBtn.click(); } catch (e) {}
+          for (let i = 0; i < 25 && !picker; i++) { await new Promise(r => setTimeout(r, 200)); picker = document.querySelector('#people-picker-input'); }
+        }
+        if (!picker) return { ok: false, error: 'people-picker input did not appear.' };
+        picker.focus();
+        // Clear any stale recipient chips a previous attempt left, so we start
+        // from exactly zero and the "exactly one chip" check stays meaningful.
+        for (let i = 0; i < 8 && document.querySelector('[data-tid^="people-picker-selected-user-"]'); i++) {
+          picker.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true }));
+          await new Promise(r => setTimeout(r, 150));
+        }
+        const setV = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setV.call(picker, email.trim());
+        picker.dispatchEvent(new Event('input', { bubbles: true }));
+        // Trust the picker's OWN resolution: only PEOPLE rows carry an email in
+        // their data-tid (groups carry names), and the picker maps aliases
+        // (e.g. sund@fortinet.com) to the person's canonical entry
+        // (sund@fortinet-us.com). So take the single PERSON row it offers,
+        // rather than demanding the tid string-equal the typed address (that
+        // rejected valid aliases). Zero people → fail closed; more than one →
+        // ambiguous, require an exact tid match to disambiguate, else fail
+        // closed. This stays precise (exactly one confirmed person) without
+        // being pedantic about which domain alias was typed.
+        const persons = () => [...document.querySelectorAll('[data-tid^="people-picker-entry-"]')]
+          .filter(e => (e.getAttribute('data-tid') || '').includes('@'));
+        let ppl = [];
+        for (let i = 0; i < 30; i++) { await new Promise(r => setTimeout(r, 200)); ppl = persons(); if (ppl.length) break; }
+        let entry = null;
+        if (ppl.length === 1) entry = ppl[0];
+        else if (ppl.length > 1) entry = ppl.find(e => (e.getAttribute('data-tid') || '').toLowerCase() === 'people-picker-entry-' + emailLc) || null;
+        if (!entry) {
+          const offered = [...document.querySelectorAll('[data-tid^="people-picker-entry-"]')].map(e => e.getAttribute('data-tid')).slice(0, 8);
+          return { ok: false, error: ppl.length > 1
+            ? `Ambiguous: ${ppl.length} people match "${email}" and none is an exact address — failing closed rather than guess. Use the exact address.`
+            : `No person match in the people-picker for "${email}" — failing closed rather than guess a recipient. Verify the address.`, offered_entries: offered };
+        }
+        // Canonical email + display name of the person we're actually opening —
+        // used for verification (the chip / header carries the CANONICAL email,
+        // not necessarily the alias that was typed).
+        const canonEmail = (entry.getAttribute('data-tid') || '').toLowerCase().replace(/^people-picker-entry-/, '');
+        const personName = (((entry.getAttribute('aria-label') || entry.innerText || '').split(/[(\n,]/)[0]) || '').trim().toLowerCase();
+        try { entry.click(); } catch (e) {}
+        // Verify fail-closed via EITHER path:
+        //  (a) NEW recipient  → exactly one recipient chip === this email; or
+        //  (b) EXISTING 1:1 / self-chat → it navigated to a 1:1 whose header
+        //      participant matches this person (<=2 participants).
+        // Sending to yourself IS a primary case (an agent DMing "me" a summary),
+        // so it must work — but only when positively confirmed as a 1:1.
+        let verified = false, verifyVia = '', verifyDetail = null;
+        for (let i = 0; i < 25 && !verified; i++) {
+          await new Promise(r => setTimeout(r, 150));
+          const chips = [...document.querySelectorAll('[data-tid^="people-picker-selected-user-"]')].map(c => (c.getAttribute('data-tid') || '').toLowerCase());
+          if (chips.length === 1 && chips[0] === 'people-picker-selected-user-' + canonEmail) { verified = true; verifyVia = 'chip'; verifyDetail = chips[0]; break; }
+          if (chips.length > 1) { verifyDetail = chips; break; }       // stale/multiple recipients → abort
+          const parts = [...new Set([...document.querySelectorAll('[data-tid^="participant-"]')].map(p => (p.innerText || '').trim().split('\n')[0]).filter(Boolean))];
+          if (parts.length > 2) { verifyDetail = parts; break; }        // opened a group → abort
+          if (parts.length && personName && parts.some(n => { const x = n.toLowerCase(); return x.includes(personName) || personName.includes(x); })) { verified = true; verifyVia = 'existing-1:1'; verifyDetail = parts; break; }
+        }
+        if (!verified) {
+          return { ok: false, error: `Recipient verification failed for "${email}" (${personName || '?'}): could not confirm the target is a 1:1 with that person (no matching recipient chip, and no matching 1:1 chat header). Aborting before send — verify manually.`, detail: verifyDetail };
+        }
+        resolveTier = 'people-picker';
+        searchPicked = verifyVia + ':' + canonEmail;
+        switched = true;
+        // After selecting a recipient the people-picker input KEEPS focus, so
+        // the shared paste below (composer.focus() + paste event) lands nowhere
+        // and CKEditor rejects it ("composer did not accept the input"). Move
+        // focus to the message composer explicitly: blur the picker, then click
+        // + focus the editor.
+        try {
+          try { picker.blur(); } catch (e) {}
+          const compEl = document.querySelector('[data-tid="ckeditor"]');
+          if (compEl) { compEl.click(); compEl.focus(); }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 400)); // composer settle + focus
+      }
+
+      // Name mode only (email is fully resolved above). name can legitimately
+      // be a group / meeting chat, which the people-picker can't find — so it
+      // keeps the left-rail + global-search resolution, guarded before send.
+      if (!email && searchQuery) {
         const lower = searchQuery.toLowerCase();
         if (!skipLeftRail && document.title.toLowerCase().includes(lower)) {
           resolveTier = 'already-here';
@@ -1738,10 +1869,12 @@ tools:
       // group shows many. If this is not a 1:1, ABORT before typing — a wrong /
       // broadcast recipient is far worse than a failed send. Do NOT retry.
       // Principle: never send to the wrong chat — rather fail than mis-deliver.
-      // Wait for the header roster to populate (same selector
-      // get_current_chat_info uses) — reading it too early returns an empty set
-      // and would pass by accident.
-      if (email || (typeof name === 'string' && name.trim())) {
+      // EMAIL is already verified via the people-picker recipient chip above.
+      // NAME mode (left-rail / global search — which can hit the wrong chat)
+      // still needs a check: the opened chat's roster or title MUST contain the
+      // requested name, else resolution went sideways → abort. This does NOT
+      // block a legit group the user named — its title/roster contains the name.
+      if (!email && typeof name === 'string' && name.trim()) {
         const readParts = () => [...new Set(
           [...document.querySelectorAll('[data-tid^="participant-"]')]
             .map(p => (p.innerText || '').trim().split('\n')[0]).filter(Boolean)
@@ -1751,28 +1884,11 @@ tools:
           partNames = readParts();
           if (partNames.length === 0) await new Promise(r => setTimeout(r, 150));
         }
-        const titleLc = (document.title || '').toLowerCase();
-
-        if (email) {
-          // email uniquely identifies ONE person → the opened chat MUST be a 1:1.
-          if (partNames.length === 0) {
-            return { ok: false, error: `Aborted before sending: could not read the chat's participants to confirm email "${email}" opened a 1:1 DM. Failing closed rather than risk a wrong recipient — verify manually and retry.`, resolve_tier: resolveTier, search_picked: searchPicked };
-          }
-          if (partNames.length > 2) {
-            return { ok: false, error: `Aborted before sending: email "${email}" resolved to a chat with ${partNames.length} participants (${partNames.slice(0, 6).join(', ')}${partNames.length > 6 ? ', …' : ''}) — refusing to deliver a person-targeted (DM) message to a GROUP chat. Verify the recipient; do NOT retry with the same params.`, resolved_participants: partNames, resolve_tier: resolveTier, search_picked: searchPicked };
-          }
-        } else {
-          // name mode: the opened chat MUST actually contain the requested name
-          // (name is a substring of the person's display name, or the group's
-          // title). If neither the roster nor the title contains it, resolution
-          // went sideways → abort. This does NOT block a legit group the user
-          // named — its title/roster contains the name.
-          const needle = name.trim().toLowerCase();
-          const inRoster = partNames.some(n => { const x = n.toLowerCase(); return x.includes(needle) || needle.includes(x); });
-          const inTitle = titleLc.includes(needle);
-          if (!inRoster && !inTitle) {
-            return { ok: false, error: `Aborted before sending: name "${name}" opened a chat (${partNames.slice(0, 6).join(', ') || document.title || 'unknown'}) whose participants/title do NOT contain "${name}" — refusing to send to an unrelated chat. Verify the target; do NOT retry with the same params.`, resolved_participants: partNames, resolve_tier: resolveTier, search_picked: searchPicked };
-          }
+        const needle = name.trim().toLowerCase();
+        const inRoster = partNames.some(n => { const x = n.toLowerCase(); return x.includes(needle) || needle.includes(x); });
+        const inTitle = (document.title || '').toLowerCase().includes(needle);
+        if (!inRoster && !inTitle) {
+          return { ok: false, error: `Aborted before sending: name "${name}" opened a chat (${partNames.slice(0, 6).join(', ') || document.title || 'unknown'}) whose participants/title do NOT contain "${name}" — refusing to send to an unrelated chat. Verify the target; do NOT retry with the same params.`, resolved_participants: partNames, resolve_tier: resolveTier, search_picked: searchPicked };
         }
       }
 
