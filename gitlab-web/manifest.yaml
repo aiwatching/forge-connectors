@@ -1,0 +1,1422 @@
+id: gitlab-web
+name: GitLab (Web Session)
+icon: 🦊
+version: 0.1.0
+author: forge
+category: connector
+mode: browser-side
+tab_strategy: reuse
+description: |
+  GitLab REST API via the user's logged-in BROWSER SESSION (cookie + CSRF),
+  NOT a Personal Access Token. Same 34 tools as the `gitlab` HTTP connector
+  (issues, MRs, projects, pipelines, branches, files, notes), but every call
+  runs as same-origin fetch(/api/v4/..., {credentials:include}) inside a GitLab
+  tab, carrying your web session. Use this when the org restricts PATs to
+  read-only scope: the web session keeps full write rights (comment, approve,
+  merge, create MR), so it works where the PAT-based `gitlab` connector 403s.
+catalog_summary: |
+  GitLab via logged-in browser session (cookie auth, no PAT). Read + WRITE
+  merge requests / issues / notes / pipelines / branches / files. Preferred
+  when PATs are read-only: web session retains write (add_mr_note, approve_mr,
+  merge_mr, create_mr, update_mr). 34 tools. Same shapes as the `gitlab`
+  connector; pick this for write ops under a read-only-PAT policy.
+settings:
+  base_url:
+    type: string
+    label: GitLab base URL
+    description: e.g. https://gitlab.example.com — the origin your browser is logged into.
+    required: true
+host_match: '{base_url}/*'
+login_redirect: /users/sign_in
+tools:
+  me:
+    description: Get the current authenticated user (id, username, email, name).
+    returns: '{ id, username, name, email, avatar_url, web_url, state }'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `user`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_my_projects:
+    description: |
+      List projects the authenticated user is a member of. Returns common
+      fields you need (id, path_with_namespace, name, default_branch,
+      web_url). Use `find_project` if you want to search by name.
+    parameters:
+      per_page:
+        description: Page size (GitLab caps at 100).
+        type: number
+        default: 50
+      order_by:
+        description: Sort field — id | name | path | created_at | updated_at | last_activity_at.
+        type: string
+        default: last_activity_at
+    returns: '[ { id, name, path_with_namespace, default_branch, web_url, ... } ]'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      q.set('membership', 'true');
+      q.set('simple', 'true');
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      if (args.order_by !== undefined && args.order_by !== null && String(args.order_by) !== '') q.set('order_by', String(args.order_by));
+      const path = `projects`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  find_project:
+    description: |
+      Search projects by name / path. Returns top matches with numeric ids —
+      use those as `project_id` for other tools so you don't need to
+      URL-encode the path.
+    parameters:
+      query:
+        description: Substring matched against project name + path.
+        type: string
+        required: true
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 10
+    returns: '[ { id, name, path_with_namespace, web_url } ]'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.query !== undefined && args.query !== null && String(args.query) !== '') q.set('search', String(args.query));
+      q.set('simple', 'true');
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `projects`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_project:
+    description: Get one project by numeric id. Use find_project to look up id from a name.
+    parameters:
+      project_id:
+        description: GitLab project numeric id (use find_project to resolve from a path).
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_branches:
+    description: List branches in a project (default branch shown as `default_branch` on get_project).
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+      search:
+        description: Filter branches whose name contains this substring.
+        type: string
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      if (args.search !== undefined && args.search !== null && String(args.search) !== '') q.set('search', String(args.search));
+      const path = `projects/${encodeURIComponent(args.project_id)}/repository/branches`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_branch:
+    description: Get a single branch by name.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      branch:
+        description: Branch name — URL-encoded automatically by Forge.
+        type: string
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/repository/branches/${encodeURIComponent(args.branch)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  read_file:
+    description: |
+      Read a file from a project at a given ref (branch / tag / sha). Returns
+      raw text. For large files use the GitLab UI directly.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      file_path:
+        type: string
+        required: true
+        description: File path inside the repo. Slashes are fine; GitLab handles them.
+      ref:
+        description: Branch / tag / commit SHA to read from.
+        type: string
+        default: main
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.ref !== undefined && args.ref !== null && String(args.ref) !== '') q.set('ref', String(args.ref));
+      const path = `projects/${encodeURIComponent(args.project_id)}/repository/files/${encodeURIComponent(args.file_path)}/raw`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_commits:
+    description: List commits on a branch / ref.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      ref_name:
+        type: string
+        description: Branch / tag / sha
+        default: main
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 25
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.ref_name !== undefined && args.ref_name !== null && String(args.ref_name) !== '') q.set('ref_name', String(args.ref_name));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `projects/${encodeURIComponent(args.project_id)}/repository/commits`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_my_issues:
+    description: List issues assigned to me across all projects. state ∈ {opened, closed, all}.
+    parameters:
+      state:
+        description: opened | closed | all.
+        type: string
+        default: opened
+      labels:
+        type: string
+        description: Comma-separated label names
+        required: false
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    returns: '[ { iid, project_id, title, state, labels, milestone, assignees, web_url, ... } ]'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      q.set('scope', 'assigned_to_me');
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') q.set('labels', String(args.labels));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `issues`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_issues:
+    description: List issues in a project with optional filters.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      state:
+        description: opened | closed | all.
+        type: string
+        default: opened
+      labels:
+        description: Comma-separated label names (must have ALL).
+        type: string
+        required: false
+      milestone:
+        description: Milestone title — exact match.
+        type: string
+        required: false
+      assignee_username:
+        description: GitLab username of the assignee (not display name).
+        type: string
+        required: false
+      search:
+        type: string
+        description: Free-text search on title + description
+        required: false
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') q.set('labels', String(args.labels));
+      if (args.milestone !== undefined && args.milestone !== null && String(args.milestone) !== '') q.set('milestone', String(args.milestone));
+      if (args.assignee_username !== undefined && args.assignee_username !== null && String(args.assignee_username) !== '') q.set('assignee_username', String(args.assignee_username));
+      if (args.search !== undefined && args.search !== null && String(args.search) !== '') q.set('search', String(args.search));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_issue:
+    description: Get one issue by project + iid (project-scoped issue number).
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      issue_iid:
+        description: 'Project-scoped issue number (the #N shown in the UI), not the global id.'
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues/${encodeURIComponent(args.issue_iid)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  search_issues:
+    description: Search issues across ALL projects visible to the user.
+    parameters:
+      query:
+        description: Free-text search on title + description.
+        type: string
+        required: true
+      state:
+        description: opened | closed | all.
+        type: string
+        default: opened
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 25
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.query !== undefined && args.query !== null && String(args.query) !== '') q.set('search', String(args.query));
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `issues`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  create_issue:
+    description: Create an issue in a project. Returns the created issue including iid + web_url.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      title:
+        description: Issue title (required).
+        type: string
+        required: true
+      description:
+        description: Issue description body (Markdown).
+        type: string
+        required: false
+      labels:
+        description: Comma-separated label names to apply.
+        type: string
+        required: false
+      assignee_ids:
+        type: string
+        description: Comma-separated user ids
+        required: false
+      milestone_id:
+        description: Numeric milestone id to attach.
+        type: number
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      const body = {};
+      if (args.title !== undefined && args.title !== null && String(args.title) !== '') body['title'] = args.title;
+      if (args.description !== undefined && args.description !== null && String(args.description) !== '') body['description'] = args.description;
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') body['labels'] = args.labels;
+      if (args.assignee_ids !== undefined && args.assignee_ids !== null && String(args.assignee_ids) !== '') body['assignee_ids'] = args.assignee_ids;
+      if (args.milestone_id !== undefined && args.milestone_id !== null && String(args.milestone_id) !== '') body['milestone_id'] = args.milestone_id;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  update_issue:
+    description: |
+      Partial update — only fields you set change. Common uses:
+      change state ('close' / 'reopen'), reassign, edit labels.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      issue_iid:
+        description: Project-scoped issue number to update.
+        type: number
+        required: true
+      title:
+        description: New title (omit to leave unchanged).
+        type: string
+        required: false
+      description:
+        description: New description (omit to leave unchanged).
+        type: string
+        required: false
+      state_event:
+        type: string
+        description: '''close'' | ''reopen'''
+        required: false
+      labels:
+        description: Replace label set with this comma-separated list.
+        type: string
+        required: false
+      assignee_ids:
+        description: Comma-separated user ids to assign (empty to clear).
+        type: string
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues/${encodeURIComponent(args.issue_iid)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'PUT', credentials: 'include', headers };
+      const body = {};
+      if (args.title !== undefined && args.title !== null && String(args.title) !== '') body['title'] = args.title;
+      if (args.description !== undefined && args.description !== null && String(args.description) !== '') body['description'] = args.description;
+      if (args.state_event !== undefined && args.state_event !== null && String(args.state_event) !== '') body['state_event'] = args.state_event;
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') body['labels'] = args.labels;
+      if (args.assignee_ids !== undefined && args.assignee_ids !== null && String(args.assignee_ids) !== '') body['assignee_ids'] = args.assignee_ids;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_issue_notes:
+    description: List comments on an issue.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      issue_iid:
+        description: Project-scoped issue number.
+        type: number
+        required: true
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+      sort:
+        description: asc | desc — order by created_at.
+        type: string
+        default: asc
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      if (args.sort !== undefined && args.sort !== null && String(args.sort) !== '') q.set('sort', String(args.sort));
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues/${encodeURIComponent(args.issue_iid)}/notes`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  add_issue_note:
+    description: Post a comment on an issue.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      issue_iid:
+        description: Project-scoped issue number to comment on.
+        type: number
+        required: true
+      body:
+        description: Comment body (Markdown).
+        type: string
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/issues/${encodeURIComponent(args.issue_iid)}/notes`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      const body = {};
+      if (args.body !== undefined && args.body !== null && String(args.body) !== '') body['body'] = args.body;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_my_mrs:
+    description: List MRs assigned to me (as reviewer/assignee) across all projects.
+    parameters:
+      state:
+        description: opened | closed | merged | locked | all.
+        type: string
+        default: opened
+      target_branch:
+        type: string
+        description: Optional target-branch filter, e.g. main / 7.6
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      q.set('scope', 'assigned_to_me');
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.target_branch !== undefined && args.target_branch !== null && String(args.target_branch) !== '') q.set('target_branch', String(args.target_branch));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `merge_requests`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_authored_mrs:
+    description: |
+      List MRs I created (where I'm the author). Use this for
+      "watch my own MRs for incoming review comments" — pair with
+      the mr-review-fix pipeline. Distinct from list_my_mrs which
+      covers MRs assigned to me as reviewer/assignee.
+    parameters:
+      state:
+        description: opened | closed | merged | locked | all.
+        type: string
+        default: opened
+      target_branch:
+        type: string
+        description: Optional target-branch filter, e.g. main / 7.6
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      q.set('scope', 'created_by_me');
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.target_branch !== undefined && args.target_branch !== null && String(args.target_branch) !== '') q.set('target_branch', String(args.target_branch));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `merge_requests`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_my_todos:
+    description: |
+      List pending Todos for the current user — same set that appears in
+      GitLab's web UI "Todos" panel. One call covers every project the
+      token can see, so this is the right tool for "watch for incoming
+      attention items" without one Job per MR.
+
+      Action cheat-sheet (observed in the wild on dops-git106):
+        - review_submitted   ← someone finished reviewing your MR
+                               (the case you want for "reviewer left
+                               feedback on my MR, go fix the code")
+        - mentioned          ← someone @-mentioned you in a comment
+        - review_requested   ← someone asked you to review their MR
+        - assigned           ← MR/Issue was assigned to you
+        - approval_required, unmergeable, build_failed,
+          directly_addressed, merge_train_removed, marked
+
+      Omit `action` to get all of them — dedup on `id` and let the
+      pipeline branch on `action_name`. Each todo carries `target` with
+      iid + project_id + title + web_url + author, so you can hand it
+      straight to a `mr-review-fix` pipeline.
+    parameters:
+      action:
+        type: string
+        description: |
+          One of the values above, or omit for all. **There is no
+          'commented' action — review-style comments arrive as
+          'review_submitted' or 'mentioned'.**
+        required: false
+      target_type:
+        type: string
+        description: MergeRequest | Issue | Commit | DesignManagement::Design | AlertManagement::Alert.
+          Omit for all.
+        required: false
+      state:
+        type: string
+        default: pending
+        description: pending (default — unread) | done
+      author_id:
+        type: number
+        description: Filter by todo author (the user whose action created the todo).
+        required: false
+      project_id:
+        type: number
+        description: Filter to one project.
+        required: false
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.action !== undefined && args.action !== null && String(args.action) !== '') q.set('action', String(args.action));
+      if (args.target_type !== undefined && args.target_type !== null && String(args.target_type) !== '') q.set('type', String(args.target_type));
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.author_id !== undefined && args.author_id !== null && String(args.author_id) !== '') q.set('author_id', String(args.author_id));
+      if (args.project_id !== undefined && args.project_id !== null && String(args.project_id) !== '') q.set('project_id', String(args.project_id));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `todos`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_mrs:
+    description: List merge requests in a project with filters.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      state:
+        type: string
+        default: opened
+        description: opened | closed | merged | locked | all
+      source_branch:
+        description: Exact source branch name.
+        type: string
+        required: false
+      target_branch:
+        description: Exact target branch name (e.g. main, release/7.6).
+        type: string
+        required: false
+      labels:
+        description: Comma-separated label names (must have ALL).
+        type: string
+        required: false
+      search:
+        description: Free-text search on title + description.
+        type: string
+        required: false
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.source_branch !== undefined && args.source_branch !== null && String(args.source_branch) !== '') q.set('source_branch', String(args.source_branch));
+      if (args.target_branch !== undefined && args.target_branch !== null && String(args.target_branch) !== '') q.set('target_branch', String(args.target_branch));
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') q.set('labels', String(args.labels));
+      if (args.search !== undefined && args.search !== null && String(args.search) !== '') q.set('search', String(args.search));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_mr:
+    description: Get a merge request by project + iid.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number (the !N shown in the UI).
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_mr_changes:
+    description: Get the diff + changed files for a merge request.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number.
+        type: number
+        required: true
+    returns: '{ id, iid, changes: [ { old_path, new_path, diff } ], ... }'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}/changes`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  search_mrs:
+    description: |
+      Search merge requests across ALL projects the token can see. Filter
+      by author / assignee / reviewer (usernames, not numeric ids),
+      source / target branch, labels, free-text query, time windows.
+
+      Typical review loop:
+        1. search_mrs(reviewer_username='me', state='opened') → list MRs
+        2. get_mr_changes(project_id, mr_iid) → diff
+        3. add_mr_note(project_id, mr_iid, body=...) → post review
+    parameters:
+      query:
+        type: string
+        description: Free-text search on title + description.
+        required: false
+      state:
+        type: string
+        default: opened
+        description: opened | closed | merged | locked | all
+      author_username:
+        type: string
+        description: Filter to MRs opened by this user (GitLab username, not display name).
+        required: false
+      assignee_username:
+        type: string
+        description: Filter to MRs assigned to this user.
+        required: false
+      reviewer_username:
+        type: string
+        description: Filter to MRs where this user is a requested reviewer.
+        required: false
+      source_branch:
+        type: string
+        description: Exact source branch name.
+        required: false
+      target_branch:
+        type: string
+        description: Exact target branch name (e.g. 'main', 'release/7.6').
+        required: false
+      labels:
+        type: string
+        description: Comma-separated label names (must have ALL).
+        required: false
+      milestone:
+        description: Milestone title — exact match.
+        type: string
+        required: false
+      scope:
+        type: string
+        description: |
+          all | created_by_me | assigned_to_me. Default 'all' — needs token
+          with view permission for any returned MR.
+        default: all
+      wip:
+        type: string
+        description: yes | no — restrict to (or exclude) Draft/WIP MRs.
+        required: false
+      created_after:
+        type: string
+        description: ISO 8601 (e.g. 2026-05-01T00:00:00Z). MRs opened on/after this.
+        required: false
+      created_before:
+        description: ISO 8601 upper bound — MRs opened on/before this.
+        type: string
+        required: false
+      updated_after:
+        type: string
+        description: ISO 8601. Useful for 'MRs updated since yesterday' polls.
+        required: false
+      updated_before:
+        description: ISO 8601 upper bound — MRs updated on/before this.
+        type: string
+        required: false
+      order_by:
+        type: string
+        description: created_at | updated_at | title — default updated_at.
+        default: updated_at
+      sort:
+        type: string
+        description: asc | desc — default desc (newest first).
+        default: desc
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 25
+      page:
+        type: number
+        description: 1-based page number for pagination.
+        required: false
+    returns: |
+      Array of MR objects: id, iid, project_id, title, description, state,
+      author, assignees[], reviewers[], source_branch, target_branch,
+      labels[], web_url, created_at, updated_at, merge_status,
+      draft (=WIP), …. Pair with get_mr_changes / list_mr_notes /
+      add_mr_note for review workflows.
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.query !== undefined && args.query !== null && String(args.query) !== '') q.set('search', String(args.query));
+      if (args.state !== undefined && args.state !== null && String(args.state) !== '') q.set('state', String(args.state));
+      if (args.author_username !== undefined && args.author_username !== null && String(args.author_username) !== '') q.set('author_username', String(args.author_username));
+      if (args.assignee_username !== undefined && args.assignee_username !== null && String(args.assignee_username) !== '') q.set('assignee_username', String(args.assignee_username));
+      if (args.reviewer_username !== undefined && args.reviewer_username !== null && String(args.reviewer_username) !== '') q.set('reviewer_username', String(args.reviewer_username));
+      if (args.source_branch !== undefined && args.source_branch !== null && String(args.source_branch) !== '') q.set('source_branch', String(args.source_branch));
+      if (args.target_branch !== undefined && args.target_branch !== null && String(args.target_branch) !== '') q.set('target_branch', String(args.target_branch));
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') q.set('labels', String(args.labels));
+      if (args.milestone !== undefined && args.milestone !== null && String(args.milestone) !== '') q.set('milestone', String(args.milestone));
+      if (args.scope !== undefined && args.scope !== null && String(args.scope) !== '') q.set('scope', String(args.scope));
+      if (args.wip !== undefined && args.wip !== null && String(args.wip) !== '') q.set('wip', String(args.wip));
+      if (args.created_after !== undefined && args.created_after !== null && String(args.created_after) !== '') q.set('created_after', String(args.created_after));
+      if (args.created_before !== undefined && args.created_before !== null && String(args.created_before) !== '') q.set('created_before', String(args.created_before));
+      if (args.updated_after !== undefined && args.updated_after !== null && String(args.updated_after) !== '') q.set('updated_after', String(args.updated_after));
+      if (args.updated_before !== undefined && args.updated_before !== null && String(args.updated_before) !== '') q.set('updated_before', String(args.updated_before));
+      if (args.order_by !== undefined && args.order_by !== null && String(args.order_by) !== '') q.set('order_by', String(args.order_by));
+      if (args.sort !== undefined && args.sort !== null && String(args.sort) !== '') q.set('sort', String(args.sort));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      if (args.page !== undefined && args.page !== null && String(args.page) !== '') q.set('page', String(args.page));
+      const path = `merge_requests`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  create_mr:
+    description: |
+      Create a merge request. Common pattern after a Forge pipeline pushes a
+      fix branch: create_mr(project_id, source_branch=fix/..., target_branch=main, title=..., description=...).
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      source_branch:
+        description: Branch containing the changes.
+        type: string
+        required: true
+      target_branch:
+        description: Branch to merge into (e.g. main).
+        type: string
+        required: true
+      title:
+        description: MR title.
+        type: string
+        required: true
+      description:
+        description: MR description (Markdown).
+        type: string
+        required: false
+      remove_source_branch:
+        description: Delete source branch after merge (default true).
+        type: boolean
+        default: true
+      squash:
+        description: Squash commits when merging (default false).
+        type: boolean
+        default: false
+      assignee_ids:
+        type: string
+        description: Comma-separated user ids
+        required: false
+      labels:
+        description: Comma-separated label names to apply.
+        type: string
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      const body = {};
+      if (args.source_branch !== undefined && args.source_branch !== null && String(args.source_branch) !== '') body['source_branch'] = args.source_branch;
+      if (args.target_branch !== undefined && args.target_branch !== null && String(args.target_branch) !== '') body['target_branch'] = args.target_branch;
+      if (args.title !== undefined && args.title !== null && String(args.title) !== '') body['title'] = args.title;
+      if (args.description !== undefined && args.description !== null && String(args.description) !== '') body['description'] = args.description;
+      if (args.remove_source_branch !== undefined && args.remove_source_branch !== null && String(args.remove_source_branch) !== '') body['remove_source_branch'] = args.remove_source_branch;
+      if (args.squash !== undefined && args.squash !== null && String(args.squash) !== '') body['squash'] = args.squash;
+      if (args.assignee_ids !== undefined && args.assignee_ids !== null && String(args.assignee_ids) !== '') body['assignee_ids'] = args.assignee_ids;
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') body['labels'] = args.labels;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  update_mr:
+    description: Partial update — title / description / state_event ('close' | 'reopen') / labels / assignees.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number to update.
+        type: number
+        required: true
+      title:
+        description: New title (omit to leave unchanged).
+        type: string
+        required: false
+      description:
+        description: New description (omit to leave unchanged).
+        type: string
+        required: false
+      state_event:
+        description: '''close'' | ''reopen''.'
+        type: string
+        required: false
+      labels:
+        description: Replace label set with this comma-separated list.
+        type: string
+        required: false
+      assignee_ids:
+        description: Comma-separated user ids to assign (empty to clear).
+        type: string
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'PUT', credentials: 'include', headers };
+      const body = {};
+      if (args.title !== undefined && args.title !== null && String(args.title) !== '') body['title'] = args.title;
+      if (args.description !== undefined && args.description !== null && String(args.description) !== '') body['description'] = args.description;
+      if (args.state_event !== undefined && args.state_event !== null && String(args.state_event) !== '') body['state_event'] = args.state_event;
+      if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') body['labels'] = args.labels;
+      if (args.assignee_ids !== undefined && args.assignee_ids !== null && String(args.assignee_ids) !== '') body['assignee_ids'] = args.assignee_ids;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  approve_mr:
+    description: Approve a merge request (requires Developer+ role).
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number to approve.
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}/approve`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      headers['X-CSRF-Token'] = CSRF;
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  merge_mr:
+    description: Actually merge a merge request. Verify CI passed + approvals met first.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number to merge.
+        type: number
+        required: true
+      merge_commit_message:
+        description: Override the auto-generated merge commit message.
+        type: string
+        required: false
+      should_remove_source_branch:
+        description: Delete source branch after merge (default true).
+        type: boolean
+        default: true
+      squash:
+        description: Squash commits when merging (default false).
+        type: boolean
+        default: false
+      merge_when_pipeline_succeeds:
+        description: Queue the merge to fire once the running pipeline passes.
+        type: boolean
+        default: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}/merge`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'PUT', credentials: 'include', headers };
+      const body = {};
+      if (args.merge_commit_message !== undefined && args.merge_commit_message !== null && String(args.merge_commit_message) !== '') body['merge_commit_message'] = args.merge_commit_message;
+      if (args.should_remove_source_branch !== undefined && args.should_remove_source_branch !== null && String(args.should_remove_source_branch) !== '') body['should_remove_source_branch'] = args.should_remove_source_branch;
+      if (args.squash !== undefined && args.squash !== null && String(args.squash) !== '') body['squash'] = args.squash;
+      if (args.merge_when_pipeline_succeeds !== undefined && args.merge_when_pipeline_succeeds !== null && String(args.merge_when_pipeline_succeeds) !== '') body['merge_when_pipeline_succeeds'] = args.merge_when_pipeline_succeeds;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_mr_notes:
+    description: List comments on a merge request.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number.
+        type: number
+        required: true
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 50
+      sort:
+        description: asc | desc — order by created_at.
+        type: string
+        default: asc
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      if (args.sort !== undefined && args.sort !== null && String(args.sort) !== '') q.set('sort', String(args.sort));
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}/notes`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  add_mr_note:
+    description: Post a comment on a merge request.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      mr_iid:
+        description: Project-scoped MR number to comment on.
+        type: number
+        required: true
+      body:
+        description: Comment body (Markdown).
+        type: string
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests/${encodeURIComponent(args.mr_iid)}/notes`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      const body = {};
+      if (args.body !== undefined && args.body !== null && String(args.body) !== '') body['body'] = args.body;
+      headers['X-CSRF-Token'] = CSRF;
+      if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_pipelines:
+    description: List pipelines for a project. Filter by ref / status / username.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      ref:
+        description: Branch / tag name to filter pipelines by.
+        type: string
+        required: false
+      status:
+        type: string
+        description: running | pending | success | failed | canceled | skipped | manual
+        required: false
+      username:
+        description: GitLab username — filter to pipelines triggered by this user.
+        type: string
+        required: false
+      per_page:
+        description: Page size cap (max 100).
+        type: number
+        default: 20
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.ref !== undefined && args.ref !== null && String(args.ref) !== '') q.set('ref', String(args.ref));
+      if (args.status !== undefined && args.status !== null && String(args.status) !== '') q.set('status', String(args.status));
+      if (args.username !== undefined && args.username !== null && String(args.username) !== '') q.set('username', String(args.username));
+      if (args.per_page !== undefined && args.per_page !== null && String(args.per_page) !== '') q.set('per_page', String(args.per_page));
+      const path = `projects/${encodeURIComponent(args.project_id)}/pipelines`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  get_pipeline:
+    description: Get one pipeline's details by id.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      pipeline_id:
+        description: Pipeline numeric id (from list_pipelines).
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/pipelines/${encodeURIComponent(args.pipeline_id)}`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  list_pipeline_jobs:
+    description: List jobs in a pipeline.
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      pipeline_id:
+        description: Pipeline numeric id whose jobs to list.
+        type: number
+        required: true
+      scope:
+        type: string
+        description: 'Comma list of: running, pending, finished, branches, tags. Empty = all.'
+        required: false
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      if (args.scope !== undefined && args.scope !== null && String(args.scope) !== '') q.set('scope', String(args.scope));
+      const path = `projects/${encodeURIComponent(args.project_id)}/pipelines/${encodeURIComponent(args.pipeline_id)}/jobs`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'GET', credentials: 'include', headers };
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  retry_pipeline:
+    description: Retry failed jobs in a pipeline.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      pipeline_id:
+        description: Pipeline numeric id to retry failed jobs for.
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/pipelines/${encodeURIComponent(args.pipeline_id)}/retry`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      headers['X-CSRF-Token'] = CSRF;
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  cancel_pipeline:
+    description: Cancel all running jobs in a pipeline.
+    destructive: true
+    parameters:
+      project_id:
+        description: GitLab project numeric id.
+        type: number
+        required: true
+      pipeline_id:
+        description: Pipeline numeric id to cancel.
+        type: number
+        required: true
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const q = new URLSearchParams();
+      const path = `projects/${encodeURIComponent(args.project_id)}/pipelines/${encodeURIComponent(args.pipeline_id)}/cancel`;
+      const qs = q.toString();
+      const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
+      const headers = { 'Accept': 'application/json' };
+      const init = { method: 'POST', credentials: 'include', headers };
+      headers['X-CSRF-Token'] = CSRF;
+      let r, text, data;
+      try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
