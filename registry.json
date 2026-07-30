@@ -61,7 +61,7 @@
       "id": "gitlab-web",
       "name": "GitLab (Web Session)",
       "icon": "🦊",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": "forge",
       "description": "GitLab via the logged-in browser session (cookie + CSRF, no PAT). Same 34 tools as `gitlab` but retains WRITE (comment/approve/merge/create) under read-only-PAT policies.",
       "min_forge_version": "0.8.0"

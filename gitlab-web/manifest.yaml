@@ -1,7 +1,7 @@
 id: gitlab-web
 name: GitLab (Web Session)
 icon: 🦊
-version: 0.1.0
+version: 0.2.0
 author: forge
 category: connector
 mode: browser-side
@@ -1420,3 +1420,51 @@ tools:
       try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
       if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
       return { ok: true, status: r.status, data };
+kanban:
+  cards:
+  - title: MRs — load & release watch
+    icon: 🦊
+    period_sec: 1800
+    mode: task
+    prompt: |
+      Show my GitLab merge-request load. Follow these rules EXACTLY — the
+      output must be identical across refreshes when the data is unchanged
+      (no judgement calls, no "about N", no re-sorting).
+
+      # === Editable variables (change the values; keep the names) ===
+      BRANCHES = []   # only MRs targeting these branches, e.g. ["main","release/7.6"]; [] = all
+      # =============================================================
+
+      Call ALL THREE tools every refresh, in this exact order (state=opened):
+      1. search_mrs(reviewer_username='me', state='opened')  → REVIEW set
+      2. list_my_mrs(state='opened')                         → ASSIGNED set
+      3. list_authored_mrs(state='opened')                   → AUTHORED set
+
+      RELIABILITY (this is what keeps the count stable):
+      - If ANY of the three calls errors / returns is_error / an error
+        object, do NOT render a shrunken list. Set the widget field
+        "degraded": true — Forge then keeps the previous good card instead
+        of overwriting it with a partial result. Never silently drop a set.
+
+      If BRANCHES is non-empty, drop every MR whose target_branch is NOT in
+      BRANCHES before counting and listing.
+
+      metric_row at the top, three cells — counts are the raw set sizes
+      (after the BRANCHES filter), NOT the truncated list below:
+        Review = |REVIEW|   Assigned = |ASSIGNED|   Authored = |AUTHORED|
+
+      Then LIST items with this DETERMINISTIC rule:
+      - De-dup by MR id, fixed precedence REVIEW > ASSIGNED > 7.6. An MR
+        already shown is never repeated.
+      - Group order: all REVIEW (badge blue 'REVIEW'), then all ASSIGNED
+        (badge amber 'ASSIGNED'), then AUTHORED/ASSIGNED MRs whose
+        target_branch is '7.6' or 'release/7.6' and not already shown
+        (badge violet '7.6').
+      - Within each group KEEP the tool's own order (the API returns newest
+        first — do not re-sort).
+      - HARD CAP 15 items total. If capping is needed, drop from the END
+        (7.6 group first, then ASSIGNED) — NEVER drop a REVIEW item. If any
+        were dropped, append one muted text line "+N more".
+      For each item show title + project, link to web_url, and add a red
+      'CONFLICTS' (has_conflicts) or 'DRAFT' (draft/work_in_progress) badge
+      where applicable. Set the widget "accent" to "violet". English.
