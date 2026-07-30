@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.8.6"
+version: "1.8.7"
 author: forge
 category: connector
 mode: server-side
@@ -70,6 +70,9 @@ catalog_summary: |
   search merge requests (search_mrs, list_my_todos), view issues and
   epics, read files and diffs, post notes/todos, manage labels, trigger
   pipelines, query projects/branches/commits. 25+ tools.
+  Needs a PAT; works headless (chat, jobs, pipelines, CLI) — no browser.
+  If your org restricts PATs to read-only scope, writes (comment / approve /
+  merge / create MR) 403 here — use the `gitlab-web` connector for those.
 
 settings:
   base_url:
