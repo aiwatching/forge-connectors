@@ -1,7 +1,7 @@
 id: gitlab
 name: GitLab
 icon: "🦊"
-version: "1.8.7"
+version: "1.8.8"
 author: forge
 category: connector
 mode: server-side
@@ -101,7 +101,13 @@ settings:
 
       Stored AES-256-GCM-encrypted in ~/.forge/data/plugin-configs.json
       with the key at ~/.forge/data/.encrypt-key.
-    required: true
+
+      Token presence is the discriminator: WITH a PAT, git push/clone go over
+      HTTPS+PAT and chat GitLab ops use this connector. WITHOUT a PAT, git
+      push/clone fall back to the local SSH key and chat ops use `gitlab-web`
+      (browser session). Leave empty to run fully PAT-free (SSH + gitlab-web);
+      set a PAT (api / read_api+write_repository) to use the server-side path.
+    required: false
   default_project_path:
     type: string
     label: Default project path
@@ -111,6 +117,14 @@ settings:
       etc.) fall back to this when the LLM doesn't pass one — so users
       can say "list my open MRs" without spelling out the repo every
       time. Leave empty to require an explicit project on every call.
+    required: false
+  ssh_host:
+    type: string
+    label: SSH host (optional)
+    description: |
+      Only used when NO PAT is set (git push/clone fall back to the local SSH
+      key). Set this if the GitLab SSH host differs from the HTTPS host
+      (e.g. ssh.gitlab.example.com). Leave empty to derive it from the base URL.
     required: false
 
 test:
