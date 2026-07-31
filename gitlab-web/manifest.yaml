@@ -1,7 +1,7 @@
 id: gitlab-web
 name: GitLab (Web Session)
 icon: 🦊
-version: 0.2.0
+version: 0.3.0
 author: forge
 category: connector
 mode: browser-side
@@ -1419,6 +1419,46 @@ tools:
       try { r = await fetch(url, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), url }; }
       try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
       if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
+      return { ok: true, status: r.status, data };
+  api:
+    description: Generic GitLab REST passthrough over the browser session — call any /api/v4 endpoint.
+      `path` is the part after /api/v4/ (e.g. "projects/123/merge_requests/45/commits"). method defaults
+      to GET; for POST/PUT pass `body` (a JSON object or JSON string). Primarily used by the glab shim
+      so pipelines run PAT-free.
+    parameters:
+      path:
+        type: string
+        description: Path after /api/v4/ (with optional ?query).
+        required: true
+      method:
+        type: string
+        description: HTTP method (GET default, POST/PUT/DELETE).
+      body:
+        type: string
+        description: Request body as a JSON object or JSON string (for POST/PUT).
+    returns: '{ ok, status, data }'
+    page:
+      url: '{base_url}/'
+      on_target: /
+    script: |
+      const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+      const path = String(args.path || '').replace(/^\/+/, '').replace(/^api\/v4\//, '');
+      const method = String(args.method || 'GET').toUpperCase();
+      const headers = { 'Accept': 'application/json' };
+      const init = { method, credentials: 'include', headers };
+      if (method !== 'GET' && method !== 'HEAD') {
+        headers['X-CSRF-Token'] = CSRF;
+        let body = args.body;
+        if (body != null && body !== '') {
+          if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
+          headers['Content-Type'] = 'application/json';
+          init.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+      }
+      let r, text, data;
+      try { r = await fetch('/api/v4/' + path, init); text = await r.text(); } catch (e) { return { ok: false, error: String(e), path }; }
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, path };
       return { ok: true, status: r.status, data };
 kanban:
   cards:
