@@ -1,7 +1,7 @@
 id: gitlab-web
 name: GitLab (Web Session)
 icon: 🦊
-version: 0.3.0
+version: 0.4.0
 author: forge
 category: connector
 mode: browser-side
@@ -986,6 +986,10 @@ tools:
     description: |
       Create a merge request. Common pattern after a Forge pipeline pushes a
       fix branch: create_mr(project_id, source_branch=fix/..., target_branch=main, title=..., description=...).
+      Release labels: where the project defines them, a new MR gets `test::pending`
+      and, when `milestone` is given, `release::candidate`, unless `labels` already
+      carries a label of that scope. The milestone is the target release
+      (e.g. "Version:7.6.9"); group milestones are found too.
     destructive: true
     parameters:
       project_id:
@@ -1024,6 +1028,14 @@ tools:
         description: Comma-separated label names to apply.
         type: string
         required: false
+      milestone:
+        description: Milestone title for the target release (e.g. "Version:7.6.9"). Project or group milestone.
+        type: string
+        required: false
+      default_labels:
+        description: Add test::pending / release::candidate where the project defines them (default true).
+        type: boolean
+        default: true
     page:
       url: '{base_url}/'
       on_target: /
@@ -1031,6 +1043,26 @@ tools:
       const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
       const q = new URLSearchParams();
       const path = `projects/${encodeURIComponent(args.project_id)}/merge_requests`;
+      const pbase = '/api/v4/projects/' + encodeURIComponent(args.project_id);
+      const getJson = async (u) => { const x = await fetch(u, { credentials: 'include', headers: { 'Accept': 'application/json' } }); return x.ok ? x.json() : null; };
+      let milestoneId = null;
+      if (args.milestone) {
+        const ms = await getJson(pbase + '/milestones?include_ancestors=true&title=' + encodeURIComponent(args.milestone));
+        const m = Array.isArray(ms) && ms.find(function (x) { return x.title === args.milestone; });
+        if (!m) return { ok: false, error: 'milestone not found in project or its groups: ' + args.milestone };
+        milestoneId = m.id;
+      }
+      const labels = String(args.labels || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      if (args.default_labels !== false && String(args.default_labels) !== 'false') {
+        const want = [['test::', 'test::pending']];
+        if (milestoneId) want.push(['release::', 'release::candidate']);
+        for (const [scope, name] of want) {
+          if (labels.some(function (l) { return l.startsWith(scope); })) continue;
+          const found = await getJson(pbase + '/labels?include_ancestor_groups=true&search=' + encodeURIComponent(name));
+          if (Array.isArray(found) && found.some(function (x) { return x.name === name; })) labels.push(name);
+        }
+      }
+      args.labels = labels.join(',');
       const qs = q.toString();
       const url = '/api/v4/' + path + (qs ? ('?' + qs) : '');
       const headers = { 'Accept': 'application/json' };
@@ -1044,6 +1076,7 @@ tools:
       if (args.squash !== undefined && args.squash !== null && String(args.squash) !== '') body['squash'] = args.squash;
       if (args.assignee_ids !== undefined && args.assignee_ids !== null && String(args.assignee_ids) !== '') body['assignee_ids'] = args.assignee_ids;
       if (args.labels !== undefined && args.labels !== null && String(args.labels) !== '') body['labels'] = args.labels;
+      if (milestoneId) body['milestone_id'] = milestoneId;
       headers['X-CSRF-Token'] = CSRF;
       if (Object.keys(body).length) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
       let r, text, data;
@@ -1052,7 +1085,10 @@ tools:
       if (!r.ok) return { ok: false, status: r.status, error: (data && data.message) ? data.message : data, url };
       return { ok: true, status: r.status, data };
   update_mr:
-    description: Partial update — title / description / state_event ('close' | 'reopen') / labels / assignees.
+    description: |
+      Partial update — title / description / state_event ('close' | 'reopen') / labels / assignees / milestone.
+      To move a release label, pass add_labels (e.g. "test::passed"); GitLab drops the
+      other label of the same scope.
     destructive: true
     parameters:
       project_id:
@@ -1083,6 +1119,18 @@ tools:
         description: Comma-separated user ids to assign (empty to clear).
         type: string
         required: false
+      add_labels:
+        description: Comma-separated labels to add, keeping the others.
+        type: string
+        required: false
+      remove_labels:
+        description: Comma-separated labels to remove.
+        type: string
+        required: false
+      milestone:
+        description: Milestone title (e.g. "Version:7.6.9"), project or group; "none" clears it.
+        type: string
+        required: false
     page:
       url: '{base_url}/'
       on_target: /
@@ -1095,6 +1143,18 @@ tools:
       const headers = { 'Accept': 'application/json' };
       const init = { method: 'PUT', credentials: 'include', headers };
       const body = {};
+      if (args.milestone) {
+        if (args.milestone === 'none') body['milestone_id'] = 0;
+        else {
+          const mr = await fetch('/api/v4/projects/' + encodeURIComponent(args.project_id) + '/milestones?include_ancestors=true&title=' + encodeURIComponent(args.milestone), { credentials: 'include', headers: { 'Accept': 'application/json' } });
+          const ms = mr.ok ? await mr.json() : [];
+          const m = Array.isArray(ms) && ms.find(function (x) { return x.title === args.milestone; });
+          if (!m) return { ok: false, error: 'milestone not found in project or its groups: ' + args.milestone };
+          body['milestone_id'] = m.id;
+        }
+      }
+      if (args.add_labels) body['add_labels'] = args.add_labels;
+      if (args.remove_labels) body['remove_labels'] = args.remove_labels;
       if (args.title !== undefined && args.title !== null && String(args.title) !== '') body['title'] = args.title;
       if (args.description !== undefined && args.description !== null && String(args.description) !== '') body['description'] = args.description;
       if (args.state_event !== undefined && args.state_event !== null && String(args.state_event) !== '') body['state_event'] = args.state_event;
