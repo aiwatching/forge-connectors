@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.1.12"
+version: "0.2.0"
 author: forge
 category: connector
 mode: server-side
@@ -39,8 +39,10 @@ http:
   verify_tls: false
 description: |
   Jenkins REST API connector — trigger builds, monitor status, fetch
-  console logs and artifacts. All requests run inside Forge (no browser
-  tab needed) so it works from chat, jobs, and pipelines.
+  console logs and artifacts; read job configs, views and credential ids;
+  create folders, views and jobs, update job config, enable/disable jobs
+  (writes need approved: true; dry_run previews). All requests run inside
+  Forge (no browser tab needed), so the API token never reaches the caller.
 
   Supports folder-nested jobs via slash-separated `job/` paths:
     job_path: "job/team-x/job/deploy-app"
@@ -52,7 +54,10 @@ description: |
 catalog_summary: |
   Jenkins REST API (server-side, API token auth, multi-instance).
   Trigger parameterized builds, poll build status, fetch console logs
-  and artifacts, list jobs. Folder-nested job paths supported. Pass
+  and artifacts, list jobs. Read config.xml, views, plugins, credential ids;
+  check_access shows what the account may create. Create folder / view /
+  job, update config, enable / disable (approved: true, dry_run). No deletes.
+  Folder-nested job paths supported. Pass
   `instance: "prod"` to pick which Jenkins server when multiple configured.
 
 settings:
@@ -455,3 +460,666 @@ tools:
       method: POST
       url: '{settings.base_url}/{args.job_path}/{args.build_number}/stop'
     returns: 'Empty body (302 Found on success).'
+
+  # ── Read: job config, views, plugins, credentials, identity ──
+
+  whoami:
+    description: |
+      Which Jenkins account the configured API token belongs to, and its authorities.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+    request:
+      method: GET
+      url: '{settings.base_url}/whoAmI/api/json'
+    returns: '{ name, authenticated, anonymous, authorities: [] }'
+
+  get_job_config:
+    description: |
+      Raw config.xml of a job or folder. Read it before update_job_config, or copy an existing job as a template for create_job.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        url_encoding: none
+        description: 'Full job path with "job/" prefixes, e.g. "job/team-x/job/deploy-app".'
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.job_path}/config.xml'
+    returns: 'Raw XML.'
+
+  list_views:
+    description: |
+      List the views at the root, or inside a folder.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      folder_path:
+        type: string
+        url_encoding: none
+        description: 'Optional folder in "job/" notation ("job/team-x"). Empty = root.'
+        default: ""
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.folder_path}/api/json?tree=views[name,url,_class]'
+    returns: '{ views: [ { name, url, _class } ] }'
+
+  get_view:
+    description: |
+      A view's description and the jobs in it.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      view_name:
+        type: string
+        required: true
+        description: 'View name, e.g. "release-process".'
+      folder_path:
+        type: string
+        url_encoding: none
+        description: 'Optional folder in "job/" notation ("job/team-x"). Empty = root.'
+        default: ""
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.folder_path}/view/{args.view_name}/api/json?tree=name,description,url,jobs[name,url,color]'
+    returns: '{ name, description, url, jobs: [ { name, url, color } ] }'
+
+  list_plugins:
+    description: |
+      Installed plugins with version and active flag (the whole list; filter it yourself).
+      Needs Overall/Administer; without it Jenkins answers 403, so use check_access instead.
+      Useful checks: cloudbees-folder (folders), workflow-aggregator (Pipeline), pipeline-utility-steps (readYaml/readJSON),
+      email-ext, credentials-binding, git, docker-workflow.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+    request:
+      method: GET
+      url: '{settings.base_url}/pluginManager/api/json?tree=plugins[shortName,version,active,enabled]'
+    returns: '{ plugins: [ { shortName, version, active, enabled } ] }'
+
+  list_credentials:
+    description: |
+      Credential ids, descriptions and types in a credential store. Never returns secret values.
+      Root (global) store by default; for a folder pass folder_path and store "folder".
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      folder_path:
+        type: string
+        url_encoding: none
+        description: 'Optional folder in "job/" notation ("job/team-x"). Empty = root.'
+        default: ""
+      store:
+        type: string
+        description: '"system" for the root store, "folder" for a folder store.'
+        default: system
+    request:
+      method: GET
+      url: '{settings.base_url}/{args.folder_path}/credentials/store/{args.store}/domain/_/api/json?tree=credentials[id,description,typeName,displayName]'
+    returns: '{ credentials: [ { id, description, typeName, displayName } ] }'
+
+  get_pending_script_approvals:
+    description: |
+      In-process script approval page (Manage Jenkins > In-process Script Approval): pending scripts and signatures.
+      Read-only. Needs admin rights; Jenkins has no JSON API for it, so this returns the page HTML.
+    protocol: http
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+    request:
+      method: GET
+      url: '{settings.base_url}/manage/scriptApproval/'
+    returns: 'HTML page; pending items are under "pending" sections.'
+
+  # ── Write: every tool needs approved: true (or dry_run: true to preview). Runs server-side; the token stays in Forge. No delete tools. ──
+
+  create_view:
+    description: |
+      Create a list view (optionally in a folder), set its description, and add jobs to it.
+      Refuses if the view already exists. Use when the Folders plugin is missing or a lightweight grouping is enough.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      name:
+        type: string
+        required: true
+        description: 'View name.'
+      description:
+        type: string
+        description: 'Optional view description.'
+      jobs:
+        type: json
+        description: 'Optional list of job names to add, e.g. ["release-freeze-guard"].'
+      folder:
+        type: string
+        description: 'Optional parent folder, "team-x" or "job/team-x". Empty = Jenkins root.'
+        default: ""
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command:
+      - node
+      - -e
+      - &jenkins_write_js |
+        const E = process.env;
+        const v = (k) => { const s = E[k]; return s == null || /^\{(args|settings)\./.test(s) ? '' : s.trim(); };
+        const out = (o) => console.log(JSON.stringify(o, null, 2));
+        const fail = (error, extra) => { out({ ok: false, error, ...extra }); process.exit(1); };
+        const base = v('J_BASE').replace(/\/+$/, '');
+        const auth = 'Basic ' + Buffer.from(v('J_USER') + ':' + E.J_TOKEN).toString('base64');
+        const action = v('J_ACTION');
+        const approved = v('J_APPROVED') === 'true';
+        const dryRun = v('J_DRY_RUN') === 'true';
+        if (!base) fail('instance has no base_url');
+        // Accepts "job/a/job/b" as-is, or "a/b" and turns it into job/a/job/b.
+        const jp = (s) => !s ? '' : s.startsWith('job/') ? s.replace(/\/+$/, '') : s.split('/').filter(Boolean).map((x) => 'job/' + encodeURIComponent(x)).join('/');
+        const pre = (p) => (p ? '/' + p : '');
+        let crumb = null;
+        async function http(method, path, { body, ctype } = {}) {
+          const headers = { Authorization: auth };
+          if (ctype) headers['Content-Type'] = ctype;
+          if (method !== 'GET' && crumb) Object.assign(headers, crumb);
+          const r = await fetch(base + path, { method, headers, body, redirect: 'manual' });
+          return { status: r.status, text: await r.text(), headers: r.headers };
+        }
+        async function exists(path) { const r = await http('GET', path + '/api/json?tree=name'); if (r.status === 401 || r.status === 403) fail('auth failed (' + r.status + ') on ' + path); return r.status === 200; }
+        // API-token auth is exempt from CSRF on current Jenkins; send a crumb anyway when the issuer offers one.
+        async function getCrumb() {
+          const r = await http('GET', '/crumbIssuer/api/json');
+          if (r.status !== 200) return;
+          const j = JSON.parse(r.text);
+          crumb = { [j.crumbRequestField]: j.crumb };
+          const ck = r.headers.get('set-cookie');
+          if (ck) crumb.Cookie = ck.split(';')[0];
+        }
+        const form = (o) => new URLSearchParams(o).toString();
+        // Item types offered on New Item (the page loads them from itemCategories): the non-admin way to tell which job-type plugins are installed.
+        async function itemTypes(folder) {
+          const r = await http('GET', pre(folder) + '/view/all/itemCategories?depth=3');
+          if (r.status !== 200) return { status: r.status, types: [] };
+          const types = [];
+          for (const c of JSON.parse(r.text).categories || []) for (const it of c.items || []) types.push(it.class);
+          return { status: 200, types };
+        }
+        async function checkAccess(folder) {
+          const res = {};
+          const who = await http('GET', '/whoAmI/api/json');
+          if (who.status === 200) { const j = JSON.parse(who.text); res.user = j.name; res.authorities = j.authorities; }
+          const root = await http('GET', pre(folder) + '/');
+          res.jenkins_version = root.headers.get('x-jenkins') || undefined;
+          res.root_links = { newJob: /href="[^"]*newJob"/.test(root.text), newView: /href="[^"]*newView"/.test(root.text), manage: /href="\/manage\/?"/.test(root.text) };
+          const nj = await itemTypes(folder);
+          res.can_create_item = nj.status === 200;
+          res.item_types = nj.types;
+          res.has_folder_type = nj.types.some((t) => /folder/i.test(t));
+          res.has_pipeline_type = nj.types.some((t) => /workflow|pipeline/i.test(t));
+          const nv = await http('GET', pre(folder) + '/newView');
+          res.can_create_view = nv.status === 200;
+          if (nv.status !== 200) res.new_view_status = nv.status;
+          const pl = await http('GET', '/pluginManager/api/json?tree=plugins[shortName,version,active]');
+          if (pl.status === 200) {
+            const want = ['cloudbees-folder', 'workflow-aggregator', 'workflow-job', 'pipeline-utility-steps', 'email-ext', 'credentials-binding', 'git', 'docker-workflow'];
+            const all = JSON.parse(pl.text).plugins;
+            res.plugins = Object.fromEntries(want.map((w) => { const x = all.find((q) => q.shortName === w); return [w, x ? x.version + (x.active ? '' : ' (inactive)') : null]; }));
+          } else {
+            res.plugins = 'plugin list needs Overall/Administer (HTTP ' + pl.status + ')';
+            const steps = await http('GET', '/pipeline-syntax/html');
+            if (steps.status === 200) {
+              const want = { readYaml: 'pipeline-utility-steps', readJSON: 'pipeline-utility-steps', readTrusted: 'workflow-multibranch', emailext: 'email-ext', withCredentials: 'credentials-binding', git: 'git', withDockerContainer: 'docker-workflow' };
+              res.pipeline_steps = Object.fromEntries(Object.entries(want).map(([w, plugin]) => [w + ' (' + plugin + ')', new RegExp('\\b' + w + '\\b').test(steps.text)]));
+            } else res.pipeline_steps = 'pipeline-syntax page HTTP ' + steps.status;
+          }
+          return res;
+        }
+
+        const FORM = 'application/x-www-form-urlencoded';
+        async function main() {
+          const steps = []; const info = {};
+          const name = v('J_NAME'), folder = jp(v('J_FOLDER')), job = jp(v('J_JOB_PATH')), view = v('J_VIEW'), desc = v('J_DESCRIPTION');
+          const xml = E.J_CONFIG_XML && !/^\{args\./.test(E.J_CONFIG_XML) ? E.J_CONFIG_XML : '';
+          const need = (val, n) => { if (!val) fail(n + ' is required'); };
+          const viewBase = (f, vw) => pre(f) + '/view/' + encodeURIComponent(vw);
+          switch (action) {
+            case 'create_view': {
+              need(name, 'name');
+              if (await exists(viewBase(folder, name))) fail('view already exists: ' + name);
+              const nv = await http('GET', pre(folder) + '/newView');
+              if (nv.status !== 200) fail('cannot create views here (HTTP ' + nv.status + ' on newView): missing View/Create permission; use create_folder instead');
+              const mode = 'hudson.model.ListView';
+              steps.push({ method: 'POST', path: pre(folder) + '/createView', ctype: FORM, body: form({ name, mode, json: JSON.stringify({ name, mode }) }) });
+              if (desc) steps.push({ method: 'POST', path: viewBase(folder, name) + '/submitDescription', ctype: FORM, body: form({ description: desc }) });
+              let jobs = [];
+              try { jobs = JSON.parse(v('J_JOBS') || '[]'); } catch { jobs = v('J_JOBS').split(',').map((s) => s.trim()).filter(Boolean); }
+              for (const j of jobs) steps.push({ method: 'POST', path: viewBase(folder, name) + '/addJobToView?name=' + encodeURIComponent(j) });
+              break;
+            }
+            case 'add_job_to_view': case 'remove_job_from_view': {
+              need(view, 'view'); need(v('J_JOB'), 'job');
+              if (!(await exists(viewBase(folder, view)))) fail('view not found: ' + view);
+              steps.push({ method: 'POST', path: viewBase(folder, view) + (action === 'add_job_to_view' ? '/addJobToView' : '/removeJobFromView') + '?name=' + encodeURIComponent(v('J_JOB')) });
+              break;
+            }
+            case 'create_folder': {
+              need(name, 'name');
+              const nj = await itemTypes(folder);
+              if (nj.status !== 200) fail('cannot open New Item (HTTP ' + nj.status + '): missing Item/Create permission here?');
+              if (!nj.types.some((t) => /folder/i.test(t))) fail('the Folder item type is not offered (cloudbees-folder plugin missing?); use create_view instead', { item_types: nj.types });
+              if (await exists(pre(folder) + '/job/' + encodeURIComponent(name))) fail('item already exists: ' + name);
+              const mode = 'com.cloudbees.hudson.plugins.folder.Folder';
+              steps.push({ method: 'POST', path: pre(folder) + '/createItem', ctype: FORM, body: form({ name, mode, from: '', json: JSON.stringify({ name, mode, from: '' }) }) });
+              if (desc) steps.push({ method: 'POST', path: pre(folder) + '/job/' + encodeURIComponent(name) + '/submitDescription', ctype: FORM, body: form({ description: desc }) });
+              break;
+            }
+            case 'create_job': {
+              need(name, 'name'); need(xml, 'config_xml');
+              if (!xml.trimStart().startsWith('<')) fail('config_xml must be the job XML');
+              if (folder && !(await exists(pre(folder)))) {
+                if (!dryRun) fail('folder not found: ' + folder);
+                info.warning = 'folder ' + folder + ' does not exist yet; create it before sending';
+              } else if (!info.warning) {
+                const nj = await itemTypes(folder);
+                if (nj.status !== 200) fail('cannot open New Item (HTTP ' + nj.status + '): missing Item/Create permission here?');
+              }
+              if (!info.warning && await exists(pre(folder) + '/job/' + encodeURIComponent(name))) fail('job already exists, refusing to overwrite: ' + name + ' (use update_job_config)');
+              steps.push({ method: 'POST', path: pre(folder) + '/createItem?name=' + encodeURIComponent(name), ctype: 'application/xml', body: xml });
+              break;
+            }
+            case 'update_job_config': {
+              need(job, 'job_path'); need(xml, 'config_xml');
+              if (!xml.trimStart().startsWith('<')) fail('config_xml must be the job XML');
+              const old = await http('GET', '/' + job + '/config.xml');
+              if (old.status !== 200) fail('cannot read current config (' + old.status + '): ' + job);
+              if (!dryRun && approved) {
+                const fs = require('fs'), path = require('path'), os = require('os');
+                const dir = path.join(E.FORGE_DATA_DIR || path.join(os.homedir(), '.forge', 'data'), 'jenkins-backups');
+                fs.mkdirSync(dir, { recursive: true });
+                info.backup_file = path.join(dir, job.replace(/[^A-Za-z0-9._-]+/g, '_') + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.xml');
+                fs.writeFileSync(info.backup_file, old.text);
+              }
+              info.old_config_xml = old.text.length <= 5000 ? old.text : old.text.slice(0, 5000) + '\n...(truncated; full copy in backup_file)';
+              steps.push({ method: 'POST', path: '/' + job + '/config.xml', ctype: 'application/xml', body: xml });
+              break;
+            }
+            case 'enable_job': case 'disable_job': {
+              need(job, 'job_path');
+              if (!(await exists('/' + job))) fail('job not found: ' + job);
+              steps.push({ method: 'POST', path: '/' + job + (action === 'enable_job' ? '/enable' : '/disable') });
+              break;
+            }
+            case 'check_access': return out({ ok: true, ...(await checkAccess(folder)) });
+            default: fail('unknown action: ' + action);
+          }
+          const plan = steps.map((s) => ({ method: s.method, url: base + s.path, body: s.body && s.body.length > 300 ? s.body.slice(0, 300) + '...' : s.body }));
+          if (dryRun) return out({ ok: true, dry_run: true, action, plan, ...info });
+          if (!approved) fail('not sent: pass approved: true after the user confirms (or dry_run: true to preview)', { action, plan });
+          await getCrumb();
+          const results = [];
+          for (const s of steps) {
+            const r = await http(s.method, s.path, { body: s.body, ctype: s.ctype });
+            const ok = r.status >= 200 && r.status < 400;
+            results.push({ method: s.method, path: s.path, status: r.status, ...(ok ? {} : { error: r.text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 400) }) });
+            if (!ok) fail('step failed with HTTP ' + r.status, { action, results, ...info });
+          }
+          out({ ok: true, action, results, ...info });
+        }
+        main().catch((e) => fail(String(e && e.message || e) + (e && e.cause ? ' (' + (e.cause.code || e.cause.message) + ')' : '')));
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: create_view
+      J_NAME: '{args.name}'
+      J_DESCRIPTION: '{args.description}'
+      J_JOBS: '{args.jobs}'
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, action, results | plan }'
+
+  add_job_to_view:
+    description: |
+      Add an existing job to a view.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      view:
+        type: string
+        required: true
+        description: 'View name.'
+      job:
+        type: string
+        required: true
+        description: 'Job name (relative to the view''s folder).'
+      folder:
+        type: string
+        description: 'Optional parent folder, "team-x" or "job/team-x". Empty = Jenkins root.'
+        default: ""
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: add_job_to_view
+      J_VIEW: '{args.view}'
+      J_JOB: '{args.job}'
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, action, results | plan }'
+
+  remove_job_from_view:
+    description: |
+      Remove a job from a view (the job itself is untouched).
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      view:
+        type: string
+        required: true
+        description: 'View name.'
+      job:
+        type: string
+        required: true
+        description: 'Job name.'
+      folder:
+        type: string
+        description: 'Optional parent folder, "team-x" or "job/team-x". Empty = Jenkins root.'
+        default: ""
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: remove_job_from_view
+      J_VIEW: '{args.view}'
+      J_JOB: '{args.job}'
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, action, results | plan }'
+
+  create_folder:
+    description: |
+      Create a folder (needs the cloudbees-folder plugin; returns a clear error if it is missing).
+      Refuses if an item with that name already exists.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      name:
+        type: string
+        required: true
+        description: 'Folder name.'
+      description:
+        type: string
+        description: 'Optional folder description.'
+      folder:
+        type: string
+        description: 'Optional parent folder for a nested folder, "team-x" or "job/team-x". Empty = Jenkins root.'
+        default: ""
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: create_folder
+      J_NAME: '{args.name}'
+      J_DESCRIPTION: '{args.description}'
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, action, results | plan }'
+
+  create_job:
+    description: |
+      Create a job from its config.xml (Pipeline, freestyle, ...), at the root or in a folder.
+      Refuses to overwrite an existing job; use update_job_config for that. To create a job disabled,
+      put <disabled>true</disabled> in the XML.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      name:
+        type: string
+        required: true
+        description: 'Job name.'
+      config_xml:
+        type: string
+        required: true
+        description: 'Complete job config.xml.'
+      folder:
+        type: string
+        description: 'Optional parent folder, "team-x" or "job/team-x". Empty = Jenkins root.'
+        default: ""
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: create_job
+      J_NAME: '{args.name}'
+      J_CONFIG_XML: '{args.config_xml}'
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, action, results | plan }'
+
+  update_job_config:
+    description: |
+      Replace a job's config.xml. The old XML is returned in the result (old_config_xml) and saved
+      under <forge data>/jenkins-backups/ before the change is sent.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        description: 'Job path, "job/team-x/job/deploy-app" or "team-x/deploy-app".'
+      config_xml:
+        type: string
+        required: true
+        description: 'Complete new config.xml.'
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: update_job_config
+      J_JOB_PATH: '{args.job_path}'
+      J_CONFIG_XML: '{args.config_xml}'
+    returns: '{ ok, action, results | plan, old_config_xml, backup_file }'
+
+  enable_job:
+    description: |
+      Enable a disabled job.
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        description: 'Job path, "job/team-x/job/deploy-app" or "team-x/deploy-app".'
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: enable_job
+      J_JOB_PATH: '{args.job_path}'
+    returns: '{ ok, action, results | plan }'
+
+  disable_job:
+    description: |
+      Disable a job (it stays, but no builds run until enabled).
+    protocol: shell
+    destructive: true
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      job_path:
+        type: string
+        required: true
+        description: 'Job path, "job/team-x/job/deploy-app" or "team-x/deploy-app".'
+      approved:
+        type: boolean
+        description: 'Must be true to send. Set it only after the user has confirmed this exact change.'
+        default: false
+      dry_run:
+        type: boolean
+        description: 'Preview: run the read-only checks and return the planned requests without sending them.'
+        default: false
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_APPROVED: '{args.approved}'
+      J_DRY_RUN: '{args.dry_run}'
+      J_ACTION: disable_job
+      J_JOB_PATH: '{args.job_path}'
+    returns: '{ ok, action, results | plan }'
+
+  check_access:
+    description: |
+      Read-only. What the configured account can do here, without admin rights: user, Jenkins version,
+      whether it can create items and views (at the root or in a folder), the item types offered on
+      New Item (Folder? Pipeline?), and installed plugins (only with Overall/Administer; otherwise the
+      Pipeline steps available: readYaml, readJSON, emailext, withCredentials, git, docker). Run it before
+      create_view / create_folder / create_job.
+    protocol: shell
+    timeout_ms: 60000
+    parameters:
+      instance:
+        type: string
+        description: 'Instance name from settings.instances. Defaults to the first.'
+      folder:
+        type: string
+        description: 'Optional folder to check instead of the root, "team-x" or "job/team-x".'
+        default: ""
+    command: [node, -e, *jenkins_write_js]
+    env:
+      J_BASE: '{settings.base_url}'
+      J_USER: '{settings.username}'
+      J_TOKEN: '{settings.api_token}'
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      NODE_NO_WARNINGS: '1'
+      J_ACTION: check_access
+      J_FOLDER: '{args.folder}'
+    returns: '{ ok, user, can_create_item, can_create_view, item_types, has_folder_type, has_pipeline_type, plugins | pipeline_steps }'
