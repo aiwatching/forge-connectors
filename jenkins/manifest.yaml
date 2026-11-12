@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.2.1"
+version: "0.2.2"
 author: forge
 category: connector
 mode: server-side
@@ -660,7 +660,10 @@ tools:
         const form = (o) => new URLSearchParams(o).toString();
         // Item types offered on New Item (the page loads them from itemCategories): the non-admin way to tell which job-type plugins are installed.
         async function itemTypes(folder) {
-          const r = await http('GET', pre(folder) + '/view/all/itemCategories?depth=3');
+          // The default view is "all" at the root but "All" in a folder; ask for its real name.
+          const pv = await http('GET', pre(folder) + '/api/json?tree=primaryView[name]');
+          const vn = (pv.status === 200 && (JSON.parse(pv.text).primaryView || {}).name) || 'all';
+          const r = await http('GET', pre(folder) + '/view/' + encodeURIComponent(vn) + '/itemCategories?depth=3');
           if (r.status !== 200) return { status: r.status, types: [] };
           const types = [];
           for (const c of JSON.parse(r.text).categories || []) for (const it of c.items || []) types.push(it.class);
