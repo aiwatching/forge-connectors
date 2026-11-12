@@ -1,7 +1,7 @@
 id: jenkins
 name: Jenkins
 icon: 🔧
-version: "0.2.0"
+version: "0.2.1"
 author: forge
 category: connector
 mode: server-side
@@ -520,10 +520,10 @@ tools:
       instance:
         type: string
         description: 'Instance name from settings.instances. Defaults to the first.'
-      view_name:
+      name:
         type: string
         required: true
-        description: 'View name, e.g. "release-process".'
+        description: 'View name, e.g. "Prelude".'
       folder_path:
         type: string
         url_encoding: none
@@ -531,7 +531,7 @@ tools:
         default: ""
     request:
       method: GET
-      url: '{settings.base_url}/{args.folder_path}/view/{args.view_name}/api/json?tree=name,description,url,jobs[name,url,color]'
+      url: '{settings.base_url}/{args.folder_path}/view/{args.name}/api/json?tree=name,description,url,jobs[name,url,color]'
     returns: '{ name, description, url, jobs: [ { name, url, color } ] }'
 
   list_plugins:
